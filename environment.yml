@@ -1,0 +1,6 @@
+name: id-pos-tagging
+channels:
+- defaults
+dependencies:
+- flake8=3.5.0
+- python=3.6.5
