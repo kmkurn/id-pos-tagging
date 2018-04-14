@@ -9,8 +9,10 @@ from sacred import Experiment
 from sacred.observers import MongoObserver
 from sklearn.metrics import accuracy_score, confusion_matrix, \
     precision_recall_fscore_support
+from spacy.tokens import Doc
 import matplotlib.pyplot as plt
 import seaborn as sns
+import spacy
 
 from utils import CorpusReader
 
@@ -42,6 +44,8 @@ def default_conf():
         use_prefix = True
         # whether to use suffix features
         use_suffix = True
+        # whether to use wordshape features
+        use_wordshape = False
         # features occurring less than this number will be discarded
         features_minfreq = 1
         # L2 regularization coefficient
@@ -70,11 +74,16 @@ def read_corpus(path, _log, _run, name='train', encoding='utf-8', lower=True, re
     return CorpusReader(path, encoding=encoding, lower=lower, replace_digits=replace_digits)
 
 
+nlp = spacy.blank('id')  # load once b/c this is slow
+
+
 @ex.capture
-def extract_crf_features(sent: typing.Sequence[str], window=2, use_prefix=True, use_suffix=True):
+def extract_crf_features(sent: typing.Sequence[str], window=2, use_prefix=True, use_suffix=True,
+                         use_wordshape=False):
     if window < 0:
         raise ValueError('window cannot be negative, got', window)
 
+    doc = Doc(nlp.vocab, words=sent)
     for i in range(len(sent)):
         fs = {'w[0]': sent[i]}
         for d in range(1, window + 1):
@@ -86,6 +95,8 @@ def extract_crf_features(sent: typing.Sequence[str], window=2, use_prefix=True, 
         if use_suffix:
             fs['suff-2'] = sent[i][-2:]  # last 2 chars
             fs['suff-3'] = sent[i][-3:]  # last 3 chars
+        if use_wordshape:
+            fs['shape'] = doc[i].shape_
         yield fs
 
 
