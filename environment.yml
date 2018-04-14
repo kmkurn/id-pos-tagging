@@ -3,4 +3,5 @@ channels:
 - defaults
 dependencies:
 - flake8=3.5.0
+- nltk=3.2.5
 - python=3.6.5
