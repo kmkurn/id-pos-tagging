@@ -2,6 +2,7 @@ name: id-pos-tagging
 channels:
 - conda-forge
 - defaults
+- pytorch
 dependencies:
 - python-crfsuite=0.9.2
 - flake8=3.5.0
@@ -10,5 +11,8 @@ dependencies:
 - seaborn=0.8.1
 - scikit-learn=0.19.1
 - spacy=2.0.10
+- pytorch=0.3.1
 - pip:
     - sacred==0.7.2
+    - torchtext==0.2.3
+    - git+https://github.com/pytorch/tnt.git@464aa4
