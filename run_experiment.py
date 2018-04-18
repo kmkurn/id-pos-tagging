@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import spacy
 import torch
-import torch.nn.functional as F
 import torch.optim as optim
 import torchnet as tnt
 
@@ -73,6 +72,8 @@ def default_conf():
         hidden_size = 100
         # dropout rate
         dropout = 0.5
+        # whether to use CRF layer as output layer instead of softmax
+        use_crf = False
         # batch size
         batch_size = 16
         # GPU device, or -1 for CPU
@@ -215,11 +216,11 @@ def build_vocab(fields: typing.Sequence[typing.Tuple[str, Field]],
 
 @ex.capture
 def make_feedforward_model(num_words, num_tags, _log, word_embedding_size=100, window=2,
-                           hidden_size=100, dropout=0.5, padding_idx=0):
+                           hidden_size=100, dropout=0.5, use_crf=False, padding_idx=0):
     _log.info('Creating the feedforward model')
     return FeedforwardTagger(
         num_words, num_tags, word_embedding_size=word_embedding_size, window=window,
-        hidden_size=hidden_size, dropout=dropout, padding_idx=padding_idx)
+        hidden_size=hidden_size, dropout=dropout, use_crf=use_crf, padding_idx=padding_idx)
 
 
 @ex.capture
@@ -266,18 +267,14 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, batch_s
     def net(minibatch):
         # shape: (batch_size, seq_length)
         words, _ = minibatch.words
-        # shape: (batch_size, seq_length, num_tags)
-        outputs = model(words)
-        # shape: (batch_size * seq_length, num_tags)
-        outputs = outputs.view(-1, num_tags)
-        # shape: (batch_size * seq_length,)
-        tags = minibatch.tags.view(-1)
-        # shape: (1,)
-        loss = F.cross_entropy(outputs, tags, ignore_index=TAGS.vocab.stoi[TAGS.pad_token])
         # shape: (batch_size, seq_length)
-        predictions = model.predict(words)
+        mask = words != WORDS.vocab.stoi[WORDS.pad_token]
+        # shape: (batch_size,)
+        loss = model(words, minibatch.tags, mask=mask)
+        # shape: (1,)
+        loss = loss.mean()
 
-        return loss, predictions
+        return loss, model.decode(words, mask=mask)
 
     def reset_meters():
         loss_meter.reset()
@@ -310,21 +307,16 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, batch_s
 
     def on_forward(state):
         loss_meter.add(state['loss'].data[0])
-
         # shape: (batch_size, seq_length)
         golds = state['sample'].tags
-        # shape: (batch_size, seq_length)
-        predictions = state['output']
-        # shape: (batch_size,)
-        _, lengths = state['sample'].words
         # Compute accuracy
-        for gold, pred, length in zip(golds, predictions, lengths):
-            gold, pred = gold[:length], pred[:length]
-            acc = accuracy_score(gold.data.numpy(), pred.data.numpy())
+        for gold, pred in zip(golds, state['output']):
+            gold = gold[:len(pred)]
+            acc = accuracy_score(gold.data.numpy(), pred)
             acc_meter.add(acc)
 
         elapsed_time = batch_timer.value()
-        speed = lengths.size(0) / elapsed_time
+        speed = golds.size(0) / elapsed_time
         speed_meter.add(speed)
 
         if state['train'] and (state['t'] + 1) % print_every == 0:
@@ -423,13 +415,13 @@ def predict_feedforward(reader, train_path, model_path, _log, _run, device=-1, b
         # shape: (batch_size, seq_length), (batch_size,)
         words, lengths = minibatch.words
         # shape: (batch_size, seq_length)
-        predictions = model.predict(words)
+        predictions = model.decode(words)
         # shape: (batch_size,)
         index = minibatch.index
 
         for i, pred, length in zip(index, predictions, lengths):
             pred = pred[:length]
-            indexed_predictions.append((i.data[0], pred.data))
+            indexed_predictions.append((i.data[0], pred))
 
     indexed_predictions.sort()
     return [TAGS.vocab.itos[pred] for _, pred_sent in indexed_predictions
