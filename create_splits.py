@@ -41,15 +41,13 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-           description='Create splits from a TSV corpus.',
-           formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+        description='Create splits from a TSV corpus.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('path', help='path to the TSV corpus file')
     parser.add_argument('--encoding', default='utf-8', help='file encoding')
     parser.add_argument(
         '--dev', type=float, default=0.1, help='proportion of dev set (from train set)')
-    parser.add_argument(
-        '--num-folds', '-k', type=int, default=5,
-        help='number of folds (set to 1 to disable k-fold CV)')
+    parser.add_argument('--num-folds', '-k', type=int, default=5, help='number of folds')
     parser.add_argument(
         '-o', '--output-directory', dest='outdir', default=os.getcwd(),
         help='output directory')
