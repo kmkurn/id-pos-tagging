@@ -9,8 +9,7 @@ import typing
 from pycrfsuite import ItemSequence, Tagger, Trainer
 from sacred import Experiment
 from sacred.observers import MongoObserver
-from sklearn.metrics import accuracy_score, confusion_matrix, \
-    precision_recall_fscore_support
+from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_support
 from spacy.tokens import Doc
 from torchtext.data import BucketIterator, Dataset, Example, Field
 from torchtext.vocab import FastText
@@ -88,9 +87,9 @@ def default_conf():
         max_epochs = 50
         # wait for this number of times reducing LR before early stopping
         stopping_patience = 5
-        # reduce LR when accuracy does not improve after this number of epochs
+        # reduce LR when F1 score does not improve after this number of epochs
         scheduler_patience = 2
-        # tolerance for comparing accuracy for early stopping
+        # tolerance for comparing F1 score for early stopping
         tol = 0.01
         # whether to print to stdout when LR is reduced
         scheduler_verbose = False
@@ -288,7 +287,7 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_wor
 
     engine = tnt.engine.Engine()
     loss_meter = tnt.meter.AverageValueMeter()
-    acc_meter = tnt.meter.AverageValueMeter()
+    f1_meter = tnt.meter.AverageValueMeter()
     speed_meter = tnt.meter.AverageValueMeter()
     train_timer = tnt.meter.TimeMeter(None)
     epoch_timer = tnt.meter.TimeMeter(None)
@@ -308,7 +307,7 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_wor
 
     def reset_meters():
         loss_meter.reset()
-        acc_meter.reset()
+        f1_meter.reset()
         speed_meter.reset()
 
     def save_model():
@@ -318,7 +317,7 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_wor
     def on_start(state):
         if state['train']:
             save_model()
-            state.update(dict(best_acc=-float('inf'), num_bad_epochs=0))
+            state.update(dict(best_f1=-float('inf'), num_bad_epochs=0))
             _log.info('Start training')
             train_timer.reset()
         else:
@@ -339,11 +338,11 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_wor
         loss_meter.add(state['loss'].data[0])
         # shape: (batch_size, seq_length)
         golds = state['sample'].tags
-        # Compute accuracy
+        # Compute weighted macro-averaged F1
         for gold, pred in zip(golds, state['output']):
             gold = gold[:len(pred)]
-            acc = accuracy_score(gold.data.numpy(), pred)
-            acc_meter.add(acc)
+            f1 = f1_score(gold.data.numpy(), pred, average='weighted')
+            f1_meter.add(f1)
 
         elapsed_time = batch_timer.value()
         speed = golds.size(0) / elapsed_time
@@ -352,29 +351,29 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_wor
         if state['train'] and (state['t'] + 1) % print_every == 0:
             epoch = (state['t'] + 1) / len(state['iterator'])
             _log.info(
-                'Epoch %.2f (%.2fms): %.2f samples/s | loss %.4f | acc %.2f',
+                'Epoch %.2f (%.2fms): %.2f samples/s | loss %.4f | f1 %.2f',
                 epoch, 1000 * elapsed_time, speed_meter.value()[0], loss_meter.value()[0],
-                acc_meter.value()[0])
+                f1_meter.value()[0])
 
     def on_end_epoch(state):
         elapsed_time = epoch_timer.value()
         _log.info(
-            'Epoch %d done (%.2fs): %.2f samples/s | loss %.4f | acc %.2f',
+            'Epoch %d done (%.2fs): %.2f samples/s | loss %.4f | f1 %.2f',
             state['epoch'], epoch_timer.value(), speed_meter.value()[0],
-            loss_meter.value()[0], acc_meter.value()[0])
+            loss_meter.value()[0], f1_meter.value()[0])
 
         if dev_iter is not None:
             _log.info('Evaluating on dev corpus')
             engine.test(net, dev_iter)
-            dev_acc = acc_meter.value()[0]
-            _log.info('Result on dev corpus (%.2fs): %.2f samples/s | loss %.4f | acc %.2f',
+            dev_f1 = f1_meter.value()[0]
+            _log.info('Result on dev corpus (%.2fs): %.2f samples/s | loss %.4f | f1 %.2f',
                       epoch_timer.value(), speed_meter.value()[0], loss_meter.value()[0],
-                      dev_acc)
+                      dev_f1)
 
-            scheduler.step(dev_acc, epoch=state['epoch'])
-            if dev_acc >= state['best_acc'] + tol:
+            scheduler.step(dev_f1, epoch=state['epoch'])
+            if dev_f1 >= state['best_f1'] + tol:
                 _log.info('New best result on dev corpus')
-                state.update(dict(best_acc=dev_acc, num_bad_epochs=0))
+                state.update(dict(best_f1=dev_f1, num_bad_epochs=0))
                 save_model()
             else:
                 state['num_bad_epochs'] += 1
@@ -539,11 +538,11 @@ def evaluate(test_path, eval_path=None, cm_path=None):
     reader = read_corpus(test_path, name='test')
     gold_labels = [tag for _, tag in reader.tagged_words()]
     pred_labels = make_predictions(reader)
-    result = {'overall_acc': accuracy_score(gold_labels, pred_labels)}
+    result = {'overall_f1': f1_score(gold_labels, pred_labels, average='weighted')}
 
     if eval_path is not None:
         evaluate_fully(gold_labels, pred_labels, result=result)
     if cm_path is not None:
         plot_confusion_matrix(gold_labels, pred_labels)
 
-    return result['overall_acc']
+    return result['overall_f1']
