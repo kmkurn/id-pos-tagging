@@ -265,11 +265,7 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, batch_s
         dev_iter = BucketIterator(
             dev_dataset, batch_size, sort_key=sort_key, device=device, train=False)
 
-    vectors = None
-    if use_fasttext:
-        fasttext = load_fasttext_embedding()
-        vectors = [fasttext]
-
+    vectors = [load_fasttext_embedding()] if use_fasttext else None
     build_vocab(fields, (train_dataset,), vectors=vectors)
     assert not use_fasttext or WORDS.vocab.vectors is not None
 
@@ -417,17 +413,22 @@ def predict_crf(reader, model_path, _log, _run):
 
 
 @ex.capture
-def predict_feedforward(reader, train_path, model_path, _log, _run, device=-1, batch_size=16):
+def predict_feedforward(reader, train_path, model_path, _log, _run, device=-1, batch_size=16,
+                        use_fasttext=False):
     WORDS, TAGS = prepare_fields()
     IDS = Field(sequential=False, use_vocab=False)
     fields = [('index', IDS), ('words', WORDS), ('tags', TAGS)]
 
     train_dataset = make_dataset(train_path, fields[1:])
-    build_vocab(fields[1:], (train_dataset,))
+    vectors = [load_fasttext_embedding()] if use_fasttext else None
+    build_vocab(fields[1:], (train_dataset,), vectors=vectors)
+    assert not use_fasttext or WORDS.vocab.vectors is not None
 
     num_words, num_tags = len(WORDS.vocab), len(TAGS.vocab)
+    pretrained_embedding = WORDS.vocab.vectors if use_fasttext else None
     model = make_feedforward_model(
-        num_words, num_tags, padding_idx=WORDS.vocab.stoi[WORDS.pad_token])
+        num_words, num_tags, padding_idx=WORDS.vocab.stoi[WORDS.pad_token],
+        pretrained_embedding=pretrained_embedding)
 
     _log.info('Loading model weights from %s', model_path)
     model.load_state_dict(torch.load(model_path, map_location='cpu'))
