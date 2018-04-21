@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+from itertools import zip_longest
 import enum
 import json
 import os
@@ -12,6 +13,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix, \
     precision_recall_fscore_support
 from spacy.tokens import Doc
 from torchtext.data import BucketIterator, Dataset, Example, Field
+from torchtext.vocab import FastText
 import matplotlib.pyplot as plt
 import seaborn as sns
 import spacy
@@ -90,6 +92,8 @@ def default_conf():
         tol = 0.01
         # whether to print to stdout when LR is reduced
         scheduler_verbose = False
+        # use fasttext pretrained word embedding
+        use_fasttext = False
 
     # path to train corpus
     train_path = 'train.tsv'
@@ -204,29 +208,49 @@ def make_dataset(path, fields, _log, name='train'):
 
 
 @ex.capture
+def load_fasttext_embedding(_log):
+    _log.info('Loading fasttext pretrained embedding')
+    fasttext = FastText(language='id', cache=os.path.join(os.getenv('HOME'), '.vectors_cache'))
+    _log.info(
+        'Read %d pretrained words with embedding size of %d', len(fasttext.itos), fasttext.dim)
+    return fasttext
+
+
+@ex.capture
 def build_vocab(fields: typing.Sequence[typing.Tuple[str, Field]],
                 datasets: typing.Sequence[Dataset],
                 _log,
+                vectors=None,
                 ) -> None:
+    if vectors is None:
+        vectors = []
+    elif len(vectors) > len(fields):
+        raise ValueError('vectors cannot be longer than fields')
+
     _log.info('Building vocabulary')
-    for name, field in fields:
-        field.build_vocab(*datasets)
+    for (name, field), vecs in zip_longest(fields, vectors):
+        field.build_vocab(*datasets, vectors=vecs)
         _log.info('Found %d %s', len(field.vocab), name)
 
 
 @ex.capture
 def make_feedforward_model(num_words, num_tags, _log, word_embedding_size=100, window=2,
-                           hidden_size=100, dropout=0.5, use_crf=False, padding_idx=0):
+                           hidden_size=100, dropout=0.5, use_crf=False, padding_idx=0,
+                           pretrained_embedding=None):
     _log.info('Creating the feedforward model')
-    return FeedforwardTagger(
+    model = FeedforwardTagger(
         num_words, num_tags, word_embedding_size=word_embedding_size, window=window,
-        hidden_size=hidden_size, dropout=dropout, use_crf=use_crf, padding_idx=padding_idx)
+        hidden_size=hidden_size, dropout=dropout, use_crf=use_crf, padding_idx=padding_idx,
+        pretrained_embedding=pretrained_embedding)
+    _log.info('Model created with %d parameters', sum(p.numel() for p in model.parameters()))
+    return model
 
 
 @ex.capture
 def train_feedforward_model(train_path, model_path, _log, dev_path=None, batch_size=16,
                             device=-1, print_every=10, max_epochs=20, stopping_patience=5,
-                            scheduler_patience=2, tol=0.01, scheduler_verbose=False):
+                            scheduler_patience=2, tol=0.01, scheduler_verbose=False,
+                            use_fasttext=False):
     WORDS, TAGS = prepare_fields()
     fields = [('words', WORDS), ('tags', TAGS)]
 
@@ -241,17 +265,23 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, batch_s
         dev_iter = BucketIterator(
             dev_dataset, batch_size, sort_key=sort_key, device=device, train=False)
 
-    build_vocab(fields, (train_dataset,))
-    assert hasattr(WORDS, 'vocab')
-    assert hasattr(TAGS, 'vocab')
+    vectors = None
+    if use_fasttext:
+        fasttext = load_fasttext_embedding()
+        vectors = [fasttext]
+
+    build_vocab(fields, (train_dataset,), vectors=vectors)
+    assert not use_fasttext or WORDS.vocab.vectors is not None
 
     num_words, num_tags = len(WORDS.vocab), len(TAGS.vocab)
+    pretrained_embedding = WORDS.vocab.vectors if use_fasttext else None
     model = make_feedforward_model(
-        num_words, num_tags, padding_idx=WORDS.vocab.stoi[WORDS.pad_token])
+        num_words, num_tags, padding_idx=WORDS.vocab.stoi[WORDS.pad_token],
+        pretrained_embedding=pretrained_embedding)
     if device >= 0:
         model.cuda(device)
 
-    optimizer = optim.Adam(model.parameters())
+    optimizer = optim.Adam((p for p in model.parameters() if p.requires_grad))
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', factor=0.5, patience=scheduler_patience, threshold=tol,
         threshold_mode='abs', verbose=scheduler_verbose)

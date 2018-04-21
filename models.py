@@ -19,6 +19,7 @@ class FeedforwardTagger(nn.Module):
                  dropout: float = 0.5,
                  padding_idx: int = 0,
                  use_crf: bool = False,
+                 pretrained_embedding: Optional[torch.Tensor] = None,
                  ) -> None:
         super().__init__()
 
@@ -39,11 +40,31 @@ class FeedforwardTagger(nn.Module):
             nn.Linear(hidden_size, num_tags),
         )
         self.crf = CRF(num_tags) if use_crf else None
+
+        self.pretrained_embedding = None
+        if pretrained_embedding is not None:
+            num_pretrained_words, pretrained_embedding_size = pretrained_embedding.size()
+            self.num_pretrained_words = num_pretrained_words
+            self.pretrained_embedding_size = pretrained_embedding_size
+            self.pretrained_embedding = nn.Embedding(
+                self.num_pretrained_words, self.pretrained_embedding_size)
+            self.pretrained_embedding.weight.data = pretrained_embedding
+            self.pretrained_embedding.weight.requires_grad = False  # prevent update when training
+            self.embedding_projection = nn.Sequential(
+                nn.Linear(word_embedding_size + pretrained_embedding_size, word_embedding_size),
+                nn.Tanh(),
+                nn.Dropout(dropout),
+            )
+
         self.reset_parameters()
 
     @property
     def use_crf(self) -> bool:
         return self.crf is not None
+
+    @property
+    def use_pretrained_embedding(self) -> bool:
+        return self.pretrained_embedding is not None
 
     def reset_parameters(self) -> None:
         init.xavier_uniform(self.ff[0].weight, gain=init.calculate_gain('tanh'))
@@ -52,6 +73,10 @@ class FeedforwardTagger(nn.Module):
         init.constant(self.ff[-1].bias, 0)
         if self.use_crf:
             self.crf.reset_parameters()
+        if self.use_pretrained_embedding:
+            init.xavier_uniform(
+                self.embedding_projection[0].weight, gain=init.calculate_gain('tanh'))
+            init.constant(self.embedding_projection[0].bias, 0)
 
     def forward(self, words: Var, tags: Var, mask: Optional[Var] = None) -> Var:
         self._check_dims_and_sizes(words, tags=tags, mask=mask)
@@ -93,10 +118,12 @@ class FeedforwardTagger(nn.Module):
 
         batch_size, seq_length = words.size()
 
+        # shape: (batch_size, seq_length + window)
         padded = torch.cat((self._get_padding(batch_size), words), 1)  # pad left
+        # shape: (batch_size, seq_length + 2*window)
         padded = torch.cat((padded, self._get_padding(batch_size)), 1)  # pad right
         # shape: (batch_size, seq_length + 2*window, word_embedding_size)
-        embedded = self.word_embedding(padded)
+        embedded = self._embed_words(padded)
 
         result = []
         for i in range(seq_length):
@@ -109,6 +136,22 @@ class FeedforwardTagger(nn.Module):
             result.append(outputs)
         # shape: (batch_size, seq_length, num_tags)
         return torch.stack(result, dim=1)
+
+    def _embed_words(self, words: Var) -> Var:
+        assert words.dim() == 2
+        # words shape: (batch_size, seq_length)
+
+        # shape: (batch_size, seq_length, word_embedding_size)
+        embedded = self.word_embedding(words)
+        if self.use_pretrained_embedding:
+            assert self.pretrained_embedding is not None
+            # shape: (batch_size, seq_length, pretrained_embedding_size)
+            pretrained = self.pretrained_embedding(words)
+            # shape: (batch_size, seq_length, word_embedding_size + pretrained_embedding_size)
+            embedded = torch.cat((embedded, pretrained), dim=-1)
+            # shape: (batch_size, seq_length, word_embedding_size)
+            embedded = self.embedding_projection(embedded)
+        return embedded
 
     def _compute_crf_loss(self, emissions: Var, tags: Var, mask: Optional[Var] = None) -> Var:
         assert emissions.dim() == 3
