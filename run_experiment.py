@@ -68,6 +68,8 @@ def default_conf():
         # maximum number of iterations
         max_iter = 2**31 - 1
     else:
+        # words occurring fewer than this value will not be included in the vocab
+        min_word_freq = 2
         # size of word embedding
         word_embedding_size = 100
         # size of hidden layer
@@ -220,16 +222,17 @@ def load_fasttext_embedding(_log):
 def build_vocab(fields: typing.Sequence[typing.Tuple[str, Field]],
                 datasets: typing.Sequence[Dataset],
                 _log,
-                vectors=None,
+                kwargs_list=None,
                 ) -> None:
-    if vectors is None:
-        vectors = []
-    elif len(vectors) > len(fields):
-        raise ValueError('vectors cannot be longer than fields')
+    if kwargs_list is None:
+        kwargs_list = []
+    elif len(kwargs_list) > len(fields):
+        raise ValueError('kwargs_list cannot be longer than fields')
 
     _log.info('Building vocabulary')
-    for (name, field), vecs in zip_longest(fields, vectors):
-        field.build_vocab(*datasets, vectors=vecs)
+    for (name, field), kwargs in zip_longest(fields, kwargs_list):
+        kwargs = {} if kwargs is None else kwargs
+        field.build_vocab(*datasets, **kwargs)
         _log.info('Found %d %s', len(field.vocab), name)
 
 
@@ -247,10 +250,10 @@ def make_feedforward_model(num_words, num_tags, _log, word_embedding_size=100, w
 
 
 @ex.capture
-def train_feedforward_model(train_path, model_path, _log, dev_path=None, batch_size=16,
-                            device=-1, print_every=10, max_epochs=20, stopping_patience=5,
-                            scheduler_patience=2, tol=0.01, scheduler_verbose=False,
-                            use_fasttext=False):
+def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_word_freq=2,
+                            batch_size=16, device=-1, print_every=10, max_epochs=20,
+                            stopping_patience=5, scheduler_patience=2, tol=0.01,
+                            scheduler_verbose=False, use_fasttext=False):
     WORDS, TAGS = prepare_fields()
     fields = [('words', WORDS), ('tags', TAGS)]
 
@@ -265,8 +268,9 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, batch_s
         dev_iter = BucketIterator(
             dev_dataset, batch_size, sort_key=sort_key, device=device, train=False)
 
-    vectors = [load_fasttext_embedding()] if use_fasttext else None
-    build_vocab(fields, (train_dataset,), vectors=vectors)
+    vectors = load_fasttext_embedding() if use_fasttext else None
+    build_vocab(
+        fields, (train_dataset,), kwargs_list=[dict(vectors=vectors, min_freq=min_word_freq)])
     assert not use_fasttext or WORDS.vocab.vectors is not None
 
     num_words, num_tags = len(WORDS.vocab), len(TAGS.vocab)
@@ -413,15 +417,16 @@ def predict_crf(reader, model_path, _log, _run):
 
 
 @ex.capture
-def predict_feedforward(reader, train_path, model_path, _log, _run, device=-1, batch_size=16,
-                        use_fasttext=False):
+def predict_feedforward(reader, train_path, model_path, _log, _run, min_word_freq=2, device=-1,
+                        batch_size=16, use_fasttext=False):
     WORDS, TAGS = prepare_fields()
     IDS = Field(sequential=False, use_vocab=False)
     fields = [('index', IDS), ('words', WORDS), ('tags', TAGS)]
 
     train_dataset = make_dataset(train_path, fields[1:])
-    vectors = [load_fasttext_embedding()] if use_fasttext else None
-    build_vocab(fields[1:], (train_dataset,), vectors=vectors)
+    vectors = load_fasttext_embedding() if use_fasttext else None
+    build_vocab(
+        fields[1:], (train_dataset,), kwargs_list=[dict(vectors=vectors, min_freq=min_word_freq)])
     assert not use_fasttext or WORDS.vocab.vectors is not None
 
     num_words, num_tags = len(WORDS.vocab), len(TAGS.vocab)
