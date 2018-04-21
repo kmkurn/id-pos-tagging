@@ -23,14 +23,6 @@ class FeedforwardTagger(nn.Module):
                  ) -> None:
         super().__init__()
 
-        self.num_words = num_words
-        self.num_tags = num_tags
-        self.word_embedding_size = word_embedding_size
-        self.window = window
-        self.hidden_size = hidden_size
-        self.dropout = dropout
-        self.padding_idx = padding_idx
-
         self.word_embedding = nn.Embedding(num_words, word_embedding_size, padding_idx=padding_idx)
         num_ctx_words = 2 * window + 1
         self.ff = nn.Sequential(
@@ -44,10 +36,8 @@ class FeedforwardTagger(nn.Module):
         self.pretrained_embedding = None
         if pretrained_embedding is not None:
             num_pretrained_words, pretrained_embedding_size = pretrained_embedding.size()
-            self.num_pretrained_words = num_pretrained_words
-            self.pretrained_embedding_size = pretrained_embedding_size
             self.pretrained_embedding = nn.Embedding(
-                self.num_pretrained_words, self.pretrained_embedding_size)
+                num_pretrained_words, pretrained_embedding_size)
             self.pretrained_embedding.weight.data = pretrained_embedding
             self.pretrained_embedding.weight.requires_grad = False  # prevent update when training
             self.embedding_projection = nn.Sequential(
@@ -57,6 +47,20 @@ class FeedforwardTagger(nn.Module):
             )
 
         self.reset_parameters()
+
+    @property
+    def word_embedding_size(self) -> int:
+        return self.word_embedding.embedding_dim
+
+    @property
+    def window(self) -> int:
+        assert isinstance(self.ff[0], nn.Linear)
+        assert self.ff[0].in_features % self.word_embedding_size == 0
+        return (self.ff[0].in_features // self.word_embedding_size - 1) // 2
+
+    @property
+    def padding_idx(self) -> int:
+        return self.word_embedding.padding_idx
 
     @property
     def use_crf(self) -> bool:
