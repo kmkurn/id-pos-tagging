@@ -5,6 +5,7 @@ import re
 
 from nltk.corpus.reader import TaggedCorpusReader
 from nltk.tokenize import BlanklineTokenizer, RegexpTokenizer
+from pycrfsuite import Trainer
 
 
 class CorpusReader(TaggedCorpusReader):
@@ -70,3 +71,21 @@ class CorpusReader(TaggedCorpusReader):
 
     def tagged_words(self) -> List[Tuple[str, str]]:
         return list(itertools.chain.from_iterable(self.tagged_sents()))
+
+
+class SacredAwarePycrfsuiteTrainer(Trainer):
+    def __init__(self, run, *args, **kwargs):
+        self.__run = run
+        super().__init__(*args, **kwargs)
+
+    def on_iteration(self, log, info):
+        self.__run.log_scalar('loss(train)', info.get('loss'))
+        for metric in 'precision recall f1'.split():
+            # Overall
+            attr = f'avg_{metric}'
+            if attr in info:
+                self.__run.log_scalar(f'{metric}(dev)', info[attr])
+            # Per label
+            for label, score in info['scores'].items():
+                self.__run.log_scalar(f'{metric}(dev, {label})', getattr(score, metric))
+        super().on_iteration(log, info)

@@ -1,12 +1,14 @@
 #!/usr/bin/env python
 
+from collections import defaultdict
 from itertools import zip_longest
 import enum
 import json
 import os
 import typing
 
-from pycrfsuite import ItemSequence, Tagger, Trainer
+from pycrfsuite import ItemSequence, Tagger
+from pymongo import MongoClient
 from sacred import Experiment
 from sacred.observers import MongoObserver
 from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_support
@@ -21,10 +23,10 @@ import torch.optim as optim
 import torchnet as tnt
 
 from models import FeedforwardTagger
-from utils import CorpusReader
+from utils import CorpusReader, SacredAwarePycrfsuiteTrainer as Trainer
 
 
-ex = Experiment()
+ex = Experiment(name='id-pos-tagging')
 
 # Setup Mongo observer
 mongo_url = os.getenv('SACRED_MONGO_URL')
@@ -149,13 +151,13 @@ def extract_crf_features(sent: typing.Sequence[str], window=2, use_prefix=True, 
 
 
 @ex.capture
-def make_crf_trainer(min_freq=1, c2=1.0, max_iter=2**31 - 1):
+def make_crf_trainer(_run, min_freq=1, c2=1.0, max_iter=2**31 - 1):
     params = {'feature.minfreq': min_freq, 'c2': c2, 'max_iterations': max_iter}
-    return Trainer(algorithm='lbfgs', params=params)
+    return Trainer(_run, algorithm='lbfgs', params=params)
 
 
 @ex.capture
-def train_crf_model(train_path, model_path, _log, dev_path=None):
+def train_crf_model(train_path, model_path, _log, _run, dev_path=None):
     train_reader = read_corpus(train_path)
     _log.info('Extracting features from train corpus')
     train_itemseq = ItemSequence([
@@ -174,7 +176,9 @@ def train_crf_model(train_path, model_path, _log, dev_path=None):
         trainer.append(dev_itemseq, dev_labels, group=1)
 
     _log.info('Begin training; saving model to %s', model_path)
-    trainer.train(model_path, holdout=1)
+    holdout = -1 if dev_path is None else 1
+    trainer.train(model_path, holdout=holdout)
+    _run.add_artifact(model_path)
 
 
 @ex.capture
@@ -249,7 +253,7 @@ def make_feedforward_model(num_words, num_tags, _log, word_embedding_size=100, w
 
 
 @ex.capture
-def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_word_freq=2,
+def train_feedforward_model(train_path, model_path, _log, _run, dev_path=None, min_word_freq=2,
                             batch_size=16, device=-1, print_every=10, max_epochs=20,
                             stopping_patience=5, scheduler_patience=2, tol=0.01,
                             scheduler_verbose=False, use_fasttext=False):
@@ -288,6 +292,7 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_wor
     engine = tnt.engine.Engine()
     loss_meter = tnt.meter.AverageValueMeter()
     f1_meter = tnt.meter.AverageValueMeter()
+    per_tag_f1_meter = defaultdict(tnt.meter.AverageValueMeter)
     speed_meter = tnt.meter.AverageValueMeter()
     train_timer = tnt.meter.TimeMeter(None)
     epoch_timer = tnt.meter.TimeMeter(None)
@@ -309,10 +314,13 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_wor
         loss_meter.reset()
         f1_meter.reset()
         speed_meter.reset()
+        for meter in per_tag_f1_meter.values():
+            meter.reset()
 
     def save_model():
         _log.info('Saving model weights to %s', model_path)
         torch.save(model.state_dict(), model_path)
+        _run.add_artifact(model_path)
 
     def on_start(state):
         if state['train']:
@@ -339,10 +347,21 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_wor
         # shape: (batch_size, seq_length)
         golds = state['sample'].tags
         # Compute weighted macro-averaged F1
+        reference, hypothesis = [], []
         for gold, pred in zip(golds, state['output']):
             gold = gold[:len(pred)]
-            f1 = f1_score(gold.data.numpy(), pred, average='weighted')
-            f1_meter.add(f1)
+            reference.extend(gold.data)
+            hypothesis.extend(pred)
+        # Overall
+        f1 = f1_score(reference, hypothesis, average='weighted')
+        f1_meter.add(f1)
+        # Per tag
+        reference = [TAGS.vocab.itos[t] for t in reference]
+        hypothesis = [TAGS.vocab.itos[t] for t in hypothesis]
+        labels = list(set(reference + hypothesis))
+        per_tag_f1 = f1_score(reference, hypothesis, average=None, labels=labels)
+        for f1, tag in zip(per_tag_f1, labels):
+            per_tag_f1_meter[tag].add(f1)
 
         elapsed_time = batch_timer.value()
         speed = golds.size(0) / elapsed_time
@@ -350,25 +369,37 @@ def train_feedforward_model(train_path, model_path, _log, dev_path=None, min_wor
 
         if state['train'] and (state['t'] + 1) % print_every == 0:
             epoch = (state['t'] + 1) / len(state['iterator'])
+            batch_loss = loss_meter.value()[0]
+            batch_f1 = f1_meter.value()[0]
             _log.info(
                 'Epoch %.2f (%.2fms): %.2f samples/s | loss %.4f | f1 %.2f',
-                epoch, 1000 * elapsed_time, speed_meter.value()[0], loss_meter.value()[0],
-                f1_meter.value()[0])
+                epoch, 1000 * elapsed_time, speed_meter.value()[0], batch_loss, batch_f1)
+            _run.log_scalar('batch_loss(train)', batch_loss, step=state['t'])
+            _run.log_scalar('batch_f1(train)', batch_f1, step=state['t'])
 
     def on_end_epoch(state):
         elapsed_time = epoch_timer.value()
+        train_loss = loss_meter.value()[0]
+        train_f1 = f1_meter.value()[0]
         _log.info(
             'Epoch %d done (%.2fs): %.2f samples/s | loss %.4f | f1 %.2f',
-            state['epoch'], epoch_timer.value(), speed_meter.value()[0],
-            loss_meter.value()[0], f1_meter.value()[0])
+            state['epoch'], epoch_timer.value(), speed_meter.value()[0], train_loss, train_f1)
+        _run.log_scalar('loss(train)', train_loss, step=state['t'])
+        _run.log_scalar('f1(train)', train_f1, step=state['t'])
+        for tag, meter in per_tag_f1_meter.items():
+            _run.log_scalar(f'f1(train, {tag})', meter.value()[0], step=state['t'])
 
         if dev_iter is not None:
             _log.info('Evaluating on dev corpus')
             engine.test(net, dev_iter)
+            dev_loss = loss_meter.value()[0]
             dev_f1 = f1_meter.value()[0]
             _log.info('Result on dev corpus (%.2fs): %.2f samples/s | loss %.4f | f1 %.2f',
-                      epoch_timer.value(), speed_meter.value()[0], loss_meter.value()[0],
-                      dev_f1)
+                      epoch_timer.value(), speed_meter.value()[0], dev_loss, dev_f1)
+            _run.log_scalar('loss(dev)', dev_loss, step=state['t'])
+            _run.log_scalar('f1(dev)', dev_f1, step=state['t'])
+            for tag, meter in per_tag_f1_meter.items():
+                _run.log_scalar(f'f1(dev, {tag})', meter.value()[0], step=state['t'])
 
             scheduler.step(dev_f1, epoch=state['epoch'])
             if dev_f1 >= state['best_f1'] + tol:
@@ -500,23 +531,29 @@ def plot_confusion_matrix(gold_labels, pred_labels, cm_path, _log, _run):
     _run.add_artifact(cm_path)
 
 
-@ex.command
+@ex.capture
 def set_random_seed(_seed):
     torch.manual_seed(_seed)
     torch.cuda.manual_seed_all(_seed)
 
 
-@ex.command
-def train():
-    """Train a model."""
-    set_random_seed()
-    if get_model_name_enum() is ModelName.CRF:
-        train_crf_model()
-    else:
-        train_feedforward_model()
+@ex.command(unobserved=True)
+def mongo():
+    """Start an IPython/Python shell for interacting with Sacred's mongodb."""
+    url = os.environ['SACRED_MONGO_URL']
+    db_name = os.environ['SACRED_DB_NAME']
+    client = MongoClient(url)
+    db = client[db_name]
+    try:
+        from IPython import start_ipython
+        start_ipython(argv=[], user_ns=dict(db=db))
+    except ImportError:
+        import code
+        shell = code.InteractiveConsole(dict(db=db))
+        shell.interact()
 
 
-@ex.command
+@ex.command(unobserved=True)
 def predict(_log, test_path):
     """Make predictions using a trained model."""
     set_random_seed()
@@ -531,7 +568,7 @@ def predict(_log, test_path):
         print()
 
 
-@ex.automain
+@ex.command
 def evaluate(test_path, eval_path=None, cm_path=None):
     """Evaluate a trained model."""
     set_random_seed()
@@ -546,3 +583,25 @@ def evaluate(test_path, eval_path=None, cm_path=None):
         plot_confusion_matrix(gold_labels, pred_labels)
 
     return result['overall_f1']
+
+
+# Commands defined after automain will not be registered. Since `train` needs to call
+# `evaluate`, we need to make sure that `evaluate` is defined before `train`.
+@ex.automain
+def train(train_path, _log, _run, dev_path=None):
+    """Train a model."""
+    set_random_seed()
+    if get_model_name_enum() is ModelName.CRF:
+        train_crf_model()
+    else:
+        train_feedforward_model()
+
+    _log.info('Evaluating on train corpus')
+    train_f1 = evaluate(train_path)
+    _log.info('Result on train corpus: f1 %.2f', train_f1)
+    _run.log_scalar('final_f1(train)', train_f1)
+    if dev_path is not None:
+        _log.info('Evaluating on dev corpus')
+        dev_f1 = evaluate(dev_path)
+        _log.info('Result on dev corpus: f1 %.2f', dev_f1)
+        _run.log_scalar('final_f1(dev)', dev_f1)
