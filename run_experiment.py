@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 
 from collections import defaultdict
-from itertools import zip_longest
 import enum
 import json
 import os
-import typing
+import shutil
 
 from pycrfsuite import ItemSequence, Tagger
 from pymongo import MongoClient
@@ -15,6 +14,7 @@ from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_
 from spacy.tokens import Doc
 from torchtext.data import BucketIterator, Dataset, Example, Field
 from torchtext.vocab import FastText
+import dill
 import matplotlib.pyplot as plt
 import seaborn as sns
 import spacy
@@ -56,6 +56,8 @@ def default_conf():
     replace_digits = True
 
     if ModelName(model_name) is ModelName.CRF:
+        # path to model file
+        model_path = 'model'
         # whether to use prefix features
         use_prefix = True
         # whether to use suffix features
@@ -69,6 +71,10 @@ def default_conf():
         # maximum number of iterations
         max_iter = 2**31 - 1
     else:
+        # path to save directory (models and checkpoints will be saved here)
+        save_dir = 'save_dir'
+        # resume training from the checkpoint saved in this directory
+        resume_from = None
         # words occurring fewer than this value will not be included in the vocab
         min_word_freq = 2
         # size of word embedding
@@ -82,7 +88,7 @@ def default_conf():
         # batch size
         batch_size = 16
         # GPU device, or -1 for CPU
-        device = -1
+        device = 0 if torch.cuda.is_available() else -1
         # print training log every this iterations
         print_every = 10
         # maximum number of training epochs
@@ -104,8 +110,6 @@ def default_conf():
     dev_path = None
     # path to test corpus (only evaluate)
     test_path = 'test.tsv'
-    # path to model file
-    model_path = 'model'
     # where to serialize evaluation result
     eval_path = None
     # where to save the confusion matrix
@@ -120,18 +124,17 @@ def get_model_name_enum(model_name):
 @ex.capture
 def read_corpus(path, _log, _run, name='train', encoding='utf-8', lower=True, replace_digits=True):
     _log.info(f'Reading {name} corpus from %s', path)
+    reader = CorpusReader(path, encoding=encoding, lower=lower, replace_digits=replace_digits)
     _run.add_resource(path)
-    return CorpusReader(path, encoding=encoding, lower=lower, replace_digits=replace_digits)
+    return reader
 
 
 nlp = spacy.blank('id')  # load once b/c this is slow
 
 
 @ex.capture
-def extract_crf_features(sent: typing.Sequence[str], window=2, use_prefix=True, use_suffix=True,
-                         use_wordshape=False):
-    if window < 0:
-        raise ValueError('window cannot be negative, got', window)
+def extract_crf_features(sent, window=2, use_prefix=True, use_suffix=True, use_wordshape=False):
+    assert window >= 0, 'window cannot be negative'
 
     doc = Doc(nlp.vocab, words=sent)
     for i in range(len(sent)):
@@ -157,7 +160,7 @@ def make_crf_trainer(_run, min_freq=1, c2=1.0, max_iter=2**31 - 1):
 
 
 @ex.capture
-def train_crf_model(train_path, model_path, _log, _run, dev_path=None):
+def train_crf(train_path, model_path, _log, _run, dev_path=None):
     train_reader = read_corpus(train_path)
     _log.info('Extracting features from train corpus')
     train_itemseq = ItemSequence([
@@ -181,19 +184,31 @@ def train_crf_model(train_path, model_path, _log, _run, dev_path=None):
     _run.add_artifact(model_path)
 
 
+FIELDS_FILENAME = 'fields.pkl'
+
+
 @ex.capture
-def prepare_fields(_log):
-    _log.info('Prepare fields')
-    WORDS = Field(  # no `lower` because it's done in `CorpusReader`
-        batch_first=True, include_lengths=True)
-    TAGS = Field(batch_first=True, unk_token=None)
-    return WORDS, TAGS
+def save_fields(fields, save_dir, _log, _run):
+    filename = os.path.join(save_dir, FIELDS_FILENAME)
+    _log.info('Saving fields to %s', filename)
+    torch.save(fields, filename, pickle_module=dill)
+    _run.add_artifact(filename)
+
+
+@ex.capture
+def load_fields(save_dir, _log, _run):
+    filename = os.path.join(save_dir, FIELDS_FILENAME)
+    _log.info('Loading fields from %s', filename)
+    fields = torch.load(filename, map_location='cpu', pickle_module=dill)
+    for name, field in fields:
+        assert not field.use_vocab or hasattr(field, 'vocab'), f'no vocab found for field {name}'
+    _run.add_resource(filename)
+    return fields
 
 
 @ex.capture
 def make_dataset(path, fields, _log, name='train'):
-    if len(fields) not in (2, 3):
-        raise ValueError('fields should contain 2 or 3 elements')
+    assert len(fields) in (2, 3), 'fields should contain 2 or 3 elements'
 
     _log.info('Creating %s dataset', name)
     if isinstance(path, str):
@@ -204,9 +219,8 @@ def make_dataset(path, fields, _log, name='train'):
     for id_, tagged_sent in enumerate(reader.tagged_sents()):
         words, tags = zip(*tagged_sent)
         if len(fields) == 3:
-            example = Example.fromlist([id_, words, tags], fields)
+            example = Example.fromlist([words, tags, id_], fields)
         else:
-            assert len(fields) == 2
             example = Example.fromlist([words, tags], fields)
         examples.append(example)
     return Dataset(examples, fields)
@@ -215,51 +229,142 @@ def make_dataset(path, fields, _log, name='train'):
 @ex.capture
 def load_fasttext_embedding(_log):
     _log.info('Loading fasttext pretrained embedding')
-    fasttext = FastText(language='id', cache=os.path.join(os.getenv('HOME'), '.vectors_cache'))
-    _log.info(
-        'Read %d pretrained words with embedding size of %d', len(fasttext.itos), fasttext.dim)
-    return fasttext
+    ft = FastText(language='id', cache=os.path.join(os.getenv('HOME'), '.vectors_cache'))
+    _log.info('Read %d pretrained words with embedding size of %d', len(ft.itos), ft.dim)
+    return ft
 
 
 @ex.capture
-def build_vocab(fields: typing.Sequence[typing.Tuple[str, Field]],
-                datasets: typing.Sequence[Dataset],
-                _log,
-                kwargs_list=None,
-                ) -> None:
-    if kwargs_list is None:
-        kwargs_list = []
-    elif len(kwargs_list) > len(fields):
-        raise ValueError('kwargs_list cannot be longer than fields')
+def build_vocab(fields, train_dataset, _log, min_word_freq=2, use_fasttext=False):
+    WORDS, TAGS = fields[0][1], fields[1][1]
 
     _log.info('Building vocabulary')
-    for (name, field), kwargs in zip_longest(fields, kwargs_list):
-        kwargs = {} if kwargs is None else kwargs
-        field.build_vocab(*datasets, **kwargs)
-        _log.info('Found %d %s', len(field.vocab), name)
+    vectors = load_fasttext_embedding() if use_fasttext else None
+    WORDS.build_vocab(train_dataset, min_freq=min_word_freq, vectors=vectors)
+    _log.info('Found %d words', len(WORDS.vocab))
+    TAGS.build_vocab(train_dataset)
+    _log.info('Found %d tags', len(TAGS.vocab))
+
+
+MODEL_METADATA_FILENAME = 'model_metadata.json'
 
 
 @ex.capture
-def make_feedforward_model(num_words, num_tags, _log, word_embedding_size=100, window=2,
-                           hidden_size=100, dropout=0.5, use_crf=False, padding_idx=0,
-                           pretrained_embedding=None):
+def save_model_metadata(metadata, save_dir, _log, _run):
+    args, kwargs = metadata
+    filename = os.path.join(save_dir, MODEL_METADATA_FILENAME)
+    _log.info('Saving model metadata to %s', filename)
+    with open(filename, 'w') as f:
+        json.dump({'args': args, 'kwargs': kwargs}, f, sort_keys=True, indent=2)
+    _run.add_artifact(filename)
+
+
+@ex.capture
+def load_model_metadata(save_dir, _log, _run):
+    filename = os.path.join(save_dir, MODEL_METADATA_FILENAME)
+    _log.info('Loading model metadata from %s', filename)
+    with open(filename) as f:
+        metadata = json.load(f)
+    _run.add_resource(filename)
+    return metadata
+
+
+@ex.capture
+def get_model_metadata(fields, training=True, word_embedding_size=100, window=2,
+                       hidden_size=100, dropout=0.5, use_crf=False, padding_idx=0):
+    WORDS, TAGS = fields[0][1], fields[1][1]
+
+    if training:
+        num_words, num_tags = len(WORDS.vocab), len(TAGS.vocab)
+        args = (num_words, num_tags)
+        kwargs = {
+            'word_embedding_size': word_embedding_size,
+            'window': window,
+            'hidden_size': hidden_size,
+            'dropout': dropout,
+            'use_crf': use_crf,
+            'padding_idx': padding_idx,
+            'pretrained_embedding': WORDS.vocab.vectors,
+        }
+        return args, kwargs
+
+    metadata = load_model_metadata()
+    args, kwargs = metadata['args'], metadata['kwargs']
+    kwargs['pretrained_embedding'] = WORDS.vocab.vectors
+    return args, kwargs
+
+
+@ex.capture
+def make_feedforward_model(fields, _log, training=True, checkpoint=None, device=-1):
     _log.info('Creating the feedforward model')
-    model = FeedforwardTagger(
-        num_words, num_tags, word_embedding_size=word_embedding_size, window=window,
-        hidden_size=hidden_size, dropout=dropout, use_crf=use_crf, padding_idx=padding_idx,
-        pretrained_embedding=pretrained_embedding)
+    args, kwargs = get_model_metadata(fields, training=training)
+    model = FeedforwardTagger(*args, **kwargs)
     _log.info('Model created with %d parameters', sum(p.numel() for p in model.parameters()))
+
+    if training:
+        kwargs.pop('pretrained_embedding')  # this is a FloatTensor, can't save it as JSON
+        save_model_metadata((args, kwargs))
+
+    if checkpoint is not None:
+        _log.info('Restoring model parameters from the checkpoint')
+        model.load_state_dict(checkpoint['model'])
+
+    if device >= 0:
+        model.cuda(device)
+
+    model.train(mode=training)
     return model
 
 
 @ex.capture
-def train_feedforward_model(train_path, model_path, _log, _run, dev_path=None, min_word_freq=2,
-                            batch_size=16, device=-1, print_every=10, max_epochs=20,
-                            stopping_patience=5, scheduler_patience=2, tol=0.01,
-                            scheduler_verbose=False, use_fasttext=False):
-    WORDS, TAGS = prepare_fields()
+def make_optimizer(model, _log, checkpoint=None):
+    _log.info('Creating the optimizer')
+    optimizer = optim.Adam((p for p in model.parameters() if p.requires_grad))
+    if checkpoint is not None:
+        _log.info('Restoring optimizer parameters from the checkpoint')
+        optimizer.load_state_dict(checkpoint['optimizer'])
+    return optimizer
+
+
+CKPT_FILENAME = 'checkpoint.pt'
+
+
+@ex.capture
+def save_checkpoint(state, save_dir, _log, _run, is_best=False):
+    filename = os.path.join(save_dir, CKPT_FILENAME)
+    _log.info('Saving checkpoint to %s', filename)
+    torch.save(state, filename)
+    _run.add_artifact(filename)
+    if is_best:
+        best_filename = os.path.join(save_dir, f'best_{CKPT_FILENAME}')
+        _log.info('Copying best checkpoint to %s', best_filename)
+        shutil.copyfile(filename, best_filename)
+        _run.add_artifact(filename)
+
+
+@ex.capture
+def load_checkpoint(resume_from, _log, _run, is_best=False):
+    filename = os.path.join(resume_from, f"{'best_' if is_best else ''}{CKPT_FILENAME}")
+    _log.info('Loading %scheckpoint from %s', 'best ' if is_best else '', filename)
+    checkpoint = torch.load(filename, map_location='cpu')
+    _run.add_resource(filename)
+    return checkpoint
+
+
+@ex.capture
+def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_size=16, device=-1,
+                      print_every=10, max_epochs=20, stopping_patience=5, scheduler_patience=2,
+                      tol=0.01, scheduler_verbose=False, resume_from=None):
+    _log.info('Creating save directory %s if it does not exist', save_dir)
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Create fields
+    WORDS = Field(  # no `lower` because it's done in `CorpusReader`
+        batch_first=True, include_lengths=True)
+    TAGS = Field(batch_first=True, unk_token=None)
     fields = [('words', WORDS), ('tags', TAGS)]
 
+    # Create datasets and iterators
     train_dataset = make_dataset(train_path, fields)
     sort_key = lambda ex: len(ex.words)  # noqa: E731
     train_iter = BucketIterator(
@@ -271,24 +376,21 @@ def train_feedforward_model(train_path, model_path, _log, _run, dev_path=None, m
         dev_iter = BucketIterator(
             dev_dataset, batch_size, sort_key=sort_key, device=device, train=False)
 
-    vectors = load_fasttext_embedding() if use_fasttext else None
-    build_vocab(
-        fields, (train_dataset,), kwargs_list=[dict(vectors=vectors, min_freq=min_word_freq)])
-    assert not use_fasttext or WORDS.vocab.vectors is not None
+    # Build vocabularies and save fields
+    build_vocab(fields, train_dataset)
+    save_fields(fields)
 
-    num_words, num_tags = len(WORDS.vocab), len(TAGS.vocab)
-    pretrained_embedding = WORDS.vocab.vectors if use_fasttext else None
-    model = make_feedforward_model(
-        num_words, num_tags, padding_idx=WORDS.vocab.stoi[WORDS.pad_token],
-        pretrained_embedding=pretrained_embedding)
-    if device >= 0:
-        model.cuda(device)
+    # Create model and restore from checkpoint if given
+    checkpoint = None if resume_from is None else load_checkpoint()
+    model = make_feedforward_model(fields, checkpoint=checkpoint)
 
-    optimizer = optim.Adam((p for p in model.parameters() if p.requires_grad))
+    # Create optimizer and learning rate scheduler
+    optimizer = make_optimizer(model, checkpoint=checkpoint)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', factor=0.5, patience=scheduler_patience, threshold=tol,
         threshold_mode='abs', verbose=scheduler_verbose)
 
+    # Create engine, meters, and timers
     engine = tnt.engine.Engine()
     loss_meter = tnt.meter.AverageValueMeter()
     f1_meter = tnt.meter.AverageValueMeter()
@@ -317,15 +419,28 @@ def train_feedforward_model(train_path, model_path, _log, _run, dev_path=None, m
         for meter in per_tag_f1_meter.values():
             meter.reset()
 
-    def save_model():
-        _log.info('Saving model weights to %s', model_path)
-        torch.save(model.state_dict(), model_path)
-        _run.add_artifact(model_path)
+    def make_checkpoint(state, is_best=False):
+        save_checkpoint({
+            'epoch': state['epoch'],
+            't': state['t'],
+            'best_f1': state['best_f1'],
+            'num_bad_epochs': state['num_bad_epochs'],
+            'model': model.state_dict(),
+            'optimizer': state['optimizer'].state_dict(),
+        }, is_best=is_best)
 
     def on_start(state):
         if state['train']:
-            save_model()
-            state.update(dict(best_f1=-float('inf'), num_bad_epochs=0))
+            state.update({'best_f1': -float('inf'), 'num_bad_epochs': 0})
+            if checkpoint is not None:
+                _log.info('Resuming training from the checkpoint')
+                state.update({
+                    'epoch': checkpoint['epoch'],
+                    't': checkpoint['t'],
+                    'best_f1': checkpoint['best_f1'],
+                    'num_bad_epochs': checkpoint['num_bad_epochs'],
+                })
+            make_checkpoint(state, is_best=True)
             _log.info('Start training')
             train_timer.reset()
         else:
@@ -389,6 +504,7 @@ def train_feedforward_model(train_path, model_path, _log, _run, dev_path=None, m
         for tag, meter in per_tag_f1_meter.items():
             _run.log_scalar(f'f1(train, {tag})', meter.value()[0], step=state['t'])
 
+        is_best = False
         if dev_iter is not None:
             _log.info('Evaluating on dev corpus')
             engine.test(net, dev_iter)
@@ -404,8 +520,8 @@ def train_feedforward_model(train_path, model_path, _log, _run, dev_path=None, m
             scheduler.step(dev_f1, epoch=state['epoch'])
             if dev_f1 >= state['best_f1'] + tol:
                 _log.info('New best result on dev corpus')
-                state.update(dict(best_f1=dev_f1, num_bad_epochs=0))
-                save_model()
+                state.update({'best_f1': dev_f1, 'num_bad_epochs': 0})
+                is_best = True
             else:
                 state['num_bad_epochs'] += 1
                 if state['num_bad_epochs'] >= stopping_patience * (scheduler_patience + 1):
@@ -413,6 +529,8 @@ def train_feedforward_model(train_path, model_path, _log, _run, dev_path=None, m
                     _log.info(
                         f"No improvements after {num_reduction} LR reductions, stopping early")
                     state['maxepoch'] = -1  # force training loop to stop
+
+        make_checkpoint(state, is_best=is_best)
 
     def on_end(state):
         if state['train']:
@@ -429,7 +547,6 @@ def train_feedforward_model(train_path, model_path, _log, _run, dev_path=None, m
         engine.train(net, train_iter, max_epochs, optimizer)
     except KeyboardInterrupt:
         _log.info('Training interrupted, aborting')
-        save_model()
 
 
 @ex.capture
@@ -447,29 +564,14 @@ def predict_crf(reader, model_path, _log, _run):
 
 
 @ex.capture
-def predict_feedforward(reader, train_path, model_path, _log, _run, min_word_freq=2, device=-1,
-                        batch_size=16, use_fasttext=False):
-    WORDS, TAGS = prepare_fields()
+def predict_feedforward(reader, save_dir, _log, _run, device=-1, batch_size=16):
+    fields = load_fields()
+    WORDS, TAGS = fields[0][1], fields[1][1]
     IDS = Field(sequential=False, use_vocab=False)
-    fields = [('index', IDS), ('words', WORDS), ('tags', TAGS)]
+    fields.append(('index', IDS))
 
-    train_dataset = make_dataset(train_path, fields[1:])
-    vectors = load_fasttext_embedding() if use_fasttext else None
-    build_vocab(
-        fields[1:], (train_dataset,), kwargs_list=[dict(vectors=vectors, min_freq=min_word_freq)])
-    assert not use_fasttext or WORDS.vocab.vectors is not None
-
-    num_words, num_tags = len(WORDS.vocab), len(TAGS.vocab)
-    pretrained_embedding = WORDS.vocab.vectors if use_fasttext else None
-    model = make_feedforward_model(
-        num_words, num_tags, padding_idx=WORDS.vocab.stoi[WORDS.pad_token],
-        pretrained_embedding=pretrained_embedding)
-
-    _log.info('Loading model weights from %s', model_path)
-    model.load_state_dict(torch.load(model_path, map_location='cpu'))
-    if device >= 0:
-        model.cuda(device)
-    model.eval()
+    checkpoint = load_checkpoint(save_dir, is_best=True)
+    model = make_feedforward_model(fields[:-1], training=False, checkpoint=checkpoint)
 
     test_dataset = make_dataset(reader, fields, name='test')
     sort_key = lambda ex: len(ex.words)  # noqa: E731
@@ -490,8 +592,7 @@ def predict_feedforward(reader, train_path, model_path, _log, _run, min_word_fre
             indexed_predictions.append((i.data[0], pred))
 
     indexed_predictions.sort()
-    return [TAGS.vocab.itos[pred] for _, pred_sent in indexed_predictions
-            for pred in pred_sent]
+    return [TAGS.vocab.itos[pred] for _, pred_sent in indexed_predictions for pred in pred_sent]
 
 
 @ex.capture
@@ -592,9 +693,9 @@ def train(train_path, _log, _run, dev_path=None):
     """Train a model."""
     set_random_seed()
     if get_model_name_enum() is ModelName.CRF:
-        train_crf_model()
+        train_crf()
     else:
-        train_feedforward_model()
+        train_feedforward()
 
     _log.info('Evaluating on train corpus')
     train_f1 = evaluate(train_path)
