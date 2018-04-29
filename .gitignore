@@ -6,6 +6,9 @@ data/working/*
 data/output/*
 !data/output/.gitkeep
 
+# Line profiler
+*.lprof
+
 # Created by https://www.gitignore.io/api/python
 
 ### Python ###

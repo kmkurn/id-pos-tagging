@@ -23,7 +23,7 @@ import torch
 import torch.optim as optim
 import torchnet as tnt
 
-from models import FeedforwardTagger
+from models import FeedforwardTagger, MemorizationTagger
 from utils import CorpusReader, SacredAwarePycrfsuiteTrainer as Trainer
 
 
@@ -39,6 +39,8 @@ if mongo_url is not None and db_name is not None:
 class ModelName(enum.Enum):
     # Majority vote baseline
     MAJOR = 'majority'
+    # Memorization baseline
+    MEMO = 'memo'
     # Conditional random field (Pisceldo et al., 2009)
     CRF = 'crf'
     # Feedforward neural network (Abka, 2016)
@@ -59,6 +61,11 @@ def default_conf():
     if ModelName(model_name) is ModelName.MAJOR:
         # path to model file
         model_path = 'model'
+    elif ModelName(model_name) is ModelName.MEMO:
+        # path to model file
+        model_path = 'model'
+        # context window size
+        window = 0
     elif ModelName(model_name) is ModelName.CRF:
         # path to model file
         model_path = 'model'
@@ -145,6 +152,17 @@ def train_majority(train_path, model_path, _log, _run):
     _log.info('Saving model to %s', model_path)
     with open(model_path, 'wb') as f:
         pickle.dump({'majority_tag': majority_tag}, f)
+    _run.add_artifact(model_path)
+
+
+@ex.capture
+def train_memo(train_path, model_path, _log, _run, window=2):
+    train_reader = read_corpus(train_path)
+    _log.info('Start training model')
+    model = MemorizationTagger.train(train_reader.tagged_sents(), window=window)
+    _log.info('Saving model to %s', model_path)
+    with open(model_path, 'wb') as f:
+        pickle.dump(model, f)
     _run.add_artifact(model_path)
 
 
@@ -574,7 +592,18 @@ def predict_majority(reader, model_path, _log, _run):
     with open(model_path, 'rb') as f:
         model = pickle.load(f)
     _run.add_resource(model_path)
+    _log.info('Making predictions with the model')
     return [model['majority_tag']] * len(reader.words())
+
+
+@ex.capture
+def predict_memo(reader, model_path, _log, _run):
+    _log.info('Loading model from %s', model_path)
+    with open(model_path, 'rb') as f:
+        model = pickle.load(f)
+    _run.add_resource(model_path)
+    _log.info('Making predictions with the model')
+    return [tag for sent in reader.sents() for tag in model.predict(sent)]
 
 
 @ex.capture
@@ -628,6 +657,8 @@ def make_predictions(reader):
     model_name = get_model_name_enum()
     if model_name is ModelName.MAJOR:
         return predict_majority(reader)
+    if model_name is ModelName.MEMO:
+        return predict_memo(reader)
     if model_name is ModelName.CRF:
         return predict_crf(reader)
     return predict_feedforward(reader)
@@ -726,6 +757,8 @@ def train(train_path, _log, _run, dev_path=None):
     set_random_seed()
     if get_model_name_enum() is ModelName.MAJOR:
         train_majority()
+    elif get_model_name_enum() is ModelName.MEMO:
+        train_memo()
     elif get_model_name_enum() is ModelName.CRF:
         train_crf()
     else:

@@ -1,5 +1,6 @@
+from collections import Counter
 from contextlib import contextmanager
-from typing import List, Optional
+from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 from torch.autograd import Variable as Var
 from torchcrf import CRF
@@ -7,6 +8,56 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
+
+
+Word = str
+Tag = str
+
+
+class MemorizationTagger(object):
+    def __init__(self, mapping: Mapping[FrozenSet, Tag], window: int = 2) -> None:
+        if not mapping:
+            raise ValueError('mapping cannot be empty')
+
+        self.mapping = mapping
+        self.window = window
+
+        c = Counter(self.mapping.values())
+        assert c
+        self._most_common_value = c.most_common(n=1)[0][0]
+
+    @classmethod
+    def train(cls,
+              tagged_sents: Sequence[Sequence[Tuple[Word, Tag]]],
+              window: int = 2,
+              ) -> 'MemorizationTagger':
+        mapping = {}
+        for tagged_sent in tagged_sents:
+            words, tags = zip(*tagged_sent)
+            for fs, tag in zip(cls._extract_features(words, window=window), tags):
+                mapping[frozenset(fs.items())] = tag
+        return cls(mapping, window=window)
+
+    def predict(self, sent: Sequence[Word]) -> Sequence[Tag]:
+        prediction = []
+        for fs in self._extract_features(sent, window=self.window):
+            prediction.append(self._getitem(frozenset(fs.items())))
+        return prediction
+
+    def _getitem(self, key: FrozenSet) -> Tag:
+        try:
+            return self.mapping[key]
+        except KeyError:
+            return self._most_common_value
+
+    @staticmethod
+    def _extract_features(sent, window=2):
+        for i in range(len(sent)):
+            fs = {'w[0]': sent[i]}
+            for d in range(1, window + 1):
+                fs[f'w[-{d}]'] = sent[i - d] if i - d >= 0 else '<s>'
+                fs[f'w[+{d}]'] = sent[i + d] if i + d < len(sent) else '</s>'
+            yield fs
 
 
 class FeedforwardTagger(nn.Module):
