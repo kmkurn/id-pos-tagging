@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 import enum
 import json
 import os
+import pickle
 import shutil
 
 from pycrfsuite import ItemSequence, Tagger
@@ -36,6 +37,8 @@ if mongo_url is not None and db_name is not None:
 
 
 class ModelName(enum.Enum):
+    # Majority vote baseline
+    MAJOR = 'majority'
     # Conditional random field (Pisceldo et al., 2009)
     CRF = 'crf'
     # Feedforward neural network (Abka, 2016)
@@ -46,18 +49,21 @@ class ModelName(enum.Enum):
 def default_conf():
     # file encoding
     encoding = 'utf8'
-    # model name [crf, feedforward]
+    # model name [majority, crf, feedforward]
     model_name = ModelName.CRF.value
-    # context window size
-    window = 2
     # whether to lowercase the words
     lower = True
     # whether to replace digits with zeros
     replace_digits = True
 
-    if ModelName(model_name) is ModelName.CRF:
+    if ModelName(model_name) is ModelName.MAJOR:
         # path to model file
         model_path = 'model'
+    elif ModelName(model_name) is ModelName.CRF:
+        # path to model file
+        model_path = 'model'
+        # context window size
+        window = 2
         # whether to use prefix features
         use_prefix = True
         # whether to use suffix features
@@ -77,6 +83,8 @@ def default_conf():
         resume_from = None
         # words occurring fewer than this value will not be included in the vocab
         min_word_freq = 2
+        # context window size
+        window = 2
         # size of word embedding
         word_embedding_size = 100
         # size of hidden layer
@@ -104,15 +112,15 @@ def default_conf():
         # use fasttext pretrained word embedding
         use_fasttext = False
 
-    # path to train corpus
+    # path to train corpus (only train)
     train_path = 'train.tsv'
-    # path to dev corpus
+    # path to dev corpus (only train)
     dev_path = None
     # path to test corpus (only evaluate)
     test_path = 'test.tsv'
-    # where to serialize evaluation result
+    # where to serialize evaluation result (only evaluate)
     eval_path = None
-    # where to save the confusion matrix
+    # where to save the confusion matrix (only evaluate)
     cm_path = None
 
 
@@ -127,6 +135,17 @@ def read_corpus(path, _log, _run, name='train', encoding='utf-8', lower=True, re
     reader = CorpusReader(path, encoding=encoding, lower=lower, replace_digits=replace_digits)
     _run.add_resource(path)
     return reader
+
+
+@ex.capture
+def train_majority(train_path, model_path, _log, _run):
+    train_reader = read_corpus(train_path)
+    c = Counter(tag for _, tag in train_reader.tagged_words())
+    majority_tag = c.most_common(n=1)[0][0]
+    _log.info('Saving model to %s', model_path)
+    with open(model_path, 'wb') as f:
+        pickle.dump({'majority_tag': majority_tag}, f)
+    _run.add_artifact(model_path)
 
 
 nlp = spacy.blank('id')  # load once b/c this is slow
@@ -550,6 +569,15 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
 
 
 @ex.capture
+def predict_majority(reader, model_path, _log, _run):
+    _log.info('Loading model from %s', model_path)
+    with open(model_path, 'rb') as f:
+        model = pickle.load(f)
+    _run.add_resource(model_path)
+    return [model['majority_tag']] * len(reader.words())
+
+
+@ex.capture
 def predict_crf(reader, model_path, _log, _run):
     _log.info('Loading model from %s', model_path)
     _run.add_resource(model_path)
@@ -598,6 +626,8 @@ def predict_feedforward(reader, save_dir, _log, _run, device=-1, batch_size=16):
 @ex.capture
 def make_predictions(reader):
     model_name = get_model_name_enum()
+    if model_name is ModelName.MAJOR:
+        return predict_majority(reader)
     if model_name is ModelName.CRF:
         return predict_crf(reader)
     return predict_feedforward(reader)
@@ -694,7 +724,9 @@ def evaluate(test_path, eval_path=None, cm_path=None):
 def train(train_path, _log, _run, dev_path=None):
     """Train a model."""
     set_random_seed()
-    if get_model_name_enum() is ModelName.CRF:
+    if get_model_name_enum() is ModelName.MAJOR:
+        train_majority()
+    elif get_model_name_enum() is ModelName.CRF:
         train_crf()
     else:
         train_feedforward()
