@@ -522,7 +522,7 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
         if state['train'] and (state['t'] + 1) % print_every == 0:
             epoch = (state['t'] + 1) / len(state['iterator'])
             batch_loss = loss_meter.value()[0]
-            batch_f1 = f1_meter.value()[0]
+            batch_f1 = 100 * f1_meter.value()[0]
             _log.info(
                 'Epoch %.2f (%.2fms): %.2f samples/s | loss %.4f | f1 %.2f',
                 epoch, 1000 * elapsed_time, speed_meter.value()[0], batch_loss, batch_f1)
@@ -532,7 +532,7 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
     def on_end_epoch(state):
         elapsed_time = epoch_timer.value()
         train_loss = loss_meter.value()[0]
-        train_f1 = f1_meter.value()[0]
+        train_f1 = 100 * f1_meter.value()[0]
         _log.info(
             'Epoch %d done (%.2fs): %.2f samples/s | loss %.4f | f1 %.2f',
             state['epoch'], epoch_timer.value(), speed_meter.value()[0], train_loss, train_f1)
@@ -546,7 +546,7 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
             _log.info('Evaluating on dev corpus')
             engine.test(net, dev_iter)
             dev_loss = loss_meter.value()[0]
-            dev_f1 = f1_meter.value()[0]
+            dev_f1 = 100 * f1_meter.value()[0]
             _log.info('Result on dev corpus (%.2fs): %.2f samples/s | loss %.4f | f1 %.2f',
                       epoch_timer.value(), speed_meter.value()[0], dev_loss, dev_f1)
             _run.log_scalar('loss(dev)', dev_loss, step=state['t'])
@@ -766,10 +766,10 @@ def train(train_path, _log, _run, dev_path=None):
 
     _log.info('Evaluating on train corpus')
     train_f1 = evaluate(train_path)
-    _log.info('Result on train corpus: f1 %.2f', train_f1)
+    _log.info('Result on train corpus: f1 %.2f', 100 * train_f1)
     _run.log_scalar('final_f1(train)', train_f1)
     if dev_path is not None:
         _log.info('Evaluating on dev corpus')
         dev_f1 = evaluate(dev_path)
-        _log.info('Result on dev corpus: f1 %.2f', dev_f1)
+        _log.info('Result on dev corpus: f1 %.2f', 100 * dev_f1)
         _run.log_scalar('final_f1(dev)', dev_f1)
