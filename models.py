@@ -266,7 +266,8 @@ class FeedforwardTagger(nn.Module):
         return result
 
     def _get_padding(self, batch_size: int) -> Var:
-        return Var(torch.Tensor(batch_size, self.window).fill_(self.padding_idx).long())
+        p = next(self.parameters())
+        return Var(p.data.new(batch_size, self.window).fill_(self.padding_idx).long())
 
     def _get_mask_for(self, x: Var) -> Var:
         return Var(x.data.new(x.size()).fill_(1).byte())
