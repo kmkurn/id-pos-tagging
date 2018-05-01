@@ -100,6 +100,8 @@ def default_conf():
         dropout = 0.5
         # whether to use CRF layer as output layer instead of softmax
         use_crf = False
+        # learning rate
+        lr = 0.001
         # batch size
         batch_size = 16
         # GPU device, or -1 for CPU
@@ -354,9 +356,9 @@ def make_feedforward_model(fields, _log, training=True, checkpoint=None, device=
 
 
 @ex.capture
-def make_optimizer(model, _log, checkpoint=None):
+def make_optimizer(model, _log, checkpoint=None, lr=0.001):
     _log.info('Creating the optimizer')
-    optimizer = optim.Adam((p for p in model.parameters() if p.requires_grad))
+    optimizer = optim.Adam((p for p in model.parameters() if p.requires_grad), lr=lr)
     if checkpoint is not None:
         _log.info('Restoring optimizer parameters from the checkpoint')
         optimizer.load_state_dict(checkpoint['optimizer'])
