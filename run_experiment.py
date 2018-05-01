@@ -36,6 +36,9 @@ if mongo_url is not None and db_name is not None:
     ex.observers.append(MongoObserver.create(url=mongo_url, db_name=db_name))
 
 
+SACRED_OBSERVE_FILES = os.getenv('SACRED_OBSERVE_FILES', 'false').lower() == 'true'
+
+
 class ModelName(enum.Enum):
     # Majority vote baseline
     MAJOR = 'majority'
@@ -142,7 +145,8 @@ def get_model_name_enum(model_name):
 def read_corpus(path, _log, _run, name='train', encoding='utf-8', lower=True, replace_digits=True):
     _log.info(f'Reading {name} corpus from %s', path)
     reader = CorpusReader(path, encoding=encoding, lower=lower, replace_digits=replace_digits)
-    _run.add_resource(path)
+    if SACRED_OBSERVE_FILES:
+        _run.add_resource(path)
     return reader
 
 
@@ -154,7 +158,8 @@ def train_majority(train_path, model_path, _log, _run):
     _log.info('Saving model to %s', model_path)
     with open(model_path, 'wb') as f:
         pickle.dump({'majority_tag': majority_tag}, f)
-    _run.add_artifact(model_path)
+    if SACRED_OBSERVE_FILES:
+        _run.add_artifact(model_path)
 
 
 @ex.capture
@@ -165,7 +170,8 @@ def train_memo(train_path, model_path, _log, _run, window=2):
     _log.info('Saving model to %s', model_path)
     with open(model_path, 'wb') as f:
         pickle.dump(model, f)
-    _run.add_artifact(model_path)
+    if SACRED_OBSERVE_FILES:
+        _run.add_artifact(model_path)
 
 
 nlp = spacy.blank('id')  # load once b/c this is slow
@@ -220,7 +226,8 @@ def train_crf(train_path, model_path, _log, _run, dev_path=None):
     _log.info('Begin training; saving model to %s', model_path)
     holdout = -1 if dev_path is None else 1
     trainer.train(model_path, holdout=holdout)
-    _run.add_artifact(model_path)
+    if SACRED_OBSERVE_FILES:
+        _run.add_artifact(model_path)
 
 
 FIELDS_FILENAME = 'fields.pkl'
@@ -231,7 +238,8 @@ def save_fields(fields, save_dir, _log, _run):
     filename = os.path.join(save_dir, FIELDS_FILENAME)
     _log.info('Saving fields to %s', filename)
     torch.save(fields, filename, pickle_module=dill)
-    _run.add_artifact(filename)
+    if SACRED_OBSERVE_FILES:
+        _run.add_artifact(filename)
 
 
 @ex.capture
@@ -241,7 +249,8 @@ def load_fields(save_dir, _log, _run):
     fields = torch.load(filename, map_location='cpu', pickle_module=dill)
     for name, field in fields:
         assert not field.use_vocab or hasattr(field, 'vocab'), f'no vocab found for field {name}'
-    _run.add_resource(filename)
+    if SACRED_OBSERVE_FILES:
+        _run.add_resource(filename)
     return fields
 
 
@@ -295,7 +304,8 @@ def save_model_metadata(metadata, save_dir, _log, _run):
     _log.info('Saving model metadata to %s', filename)
     with open(filename, 'w') as f:
         json.dump({'args': args, 'kwargs': kwargs}, f, sort_keys=True, indent=2)
-    _run.add_artifact(filename)
+    if SACRED_OBSERVE_FILES:
+        _run.add_artifact(filename)
 
 
 @ex.capture
@@ -304,7 +314,8 @@ def load_model_metadata(save_dir, _log, _run):
     _log.info('Loading model metadata from %s', filename)
     with open(filename) as f:
         metadata = json.load(f)
-    _run.add_resource(filename)
+    if SACRED_OBSERVE_FILES:
+        _run.add_resource(filename)
     return metadata
 
 
@@ -373,12 +384,14 @@ def save_checkpoint(state, save_dir, _log, _run, is_best=False):
     filename = os.path.join(save_dir, CKPT_FILENAME)
     _log.info('Saving checkpoint to %s', filename)
     torch.save(state, filename)
-    _run.add_artifact(filename)
+    if SACRED_OBSERVE_FILES:
+        _run.add_artifact(filename)
     if is_best:
         best_filename = os.path.join(save_dir, f'best_{CKPT_FILENAME}')
         _log.info('Copying best checkpoint to %s', best_filename)
         shutil.copyfile(filename, best_filename)
-        _run.add_artifact(filename)
+        if SACRED_OBSERVE_FILES:
+            _run.add_artifact(filename)
 
 
 @ex.capture
@@ -386,7 +399,8 @@ def load_checkpoint(resume_from, _log, _run, is_best=False):
     filename = os.path.join(resume_from, f"{'best_' if is_best else ''}{CKPT_FILENAME}")
     _log.info('Loading %scheckpoint from %s', 'best ' if is_best else '', filename)
     checkpoint = torch.load(filename, map_location='cpu')
-    _run.add_resource(filename)
+    if SACRED_OBSERVE_FILES:
+        _run.add_resource(filename)
     return checkpoint
 
 
@@ -593,7 +607,8 @@ def predict_majority(reader, model_path, _log, _run):
     _log.info('Loading model from %s', model_path)
     with open(model_path, 'rb') as f:
         model = pickle.load(f)
-    _run.add_resource(model_path)
+    if SACRED_OBSERVE_FILES:
+        _run.add_resource(model_path)
     _log.info('Making predictions with the model')
     return [model['majority_tag']] * len(reader.words())
 
@@ -603,7 +618,8 @@ def predict_memo(reader, model_path, _log, _run):
     _log.info('Loading model from %s', model_path)
     with open(model_path, 'rb') as f:
         model = pickle.load(f)
-    _run.add_resource(model_path)
+    if SACRED_OBSERVE_FILES:
+        _run.add_resource(model_path)
     _log.info('Making predictions with the model')
     return [tag for sent in reader.sents() for tag in model.predict(sent)]
 
@@ -611,7 +627,8 @@ def predict_memo(reader, model_path, _log, _run):
 @ex.capture
 def predict_crf(reader, model_path, _log, _run):
     _log.info('Loading model from %s', model_path)
-    _run.add_resource(model_path)
+    if SACRED_OBSERVE_FILES:
+        _run.add_resource(model_path)
     tagger = Tagger()
     tagger.open(model_path)
 
@@ -679,7 +696,8 @@ def evaluate_fully(gold_labels, pred_labels, eval_path, _log, _run, result=None)
     _log.info('Saving the full evaluation result to %s', eval_path)
     with open(eval_path, 'w') as f:
         json.dump(result, f, indent=2)
-    _run.add_artifact(eval_path)
+    if SACRED_OBSERVE_FILES:
+        _run.add_artifact(eval_path)
 
 
 @ex.capture
@@ -694,7 +712,8 @@ def plot_confusion_matrix(gold_labels, pred_labels, cm_path, _log, _run):
     plt.xlabel('Predicted')
     plt.ylabel('True')
     plt.savefig(cm_path, bbox_inches='tight')
-    _run.add_artifact(cm_path)
+    if SACRED_OBSERVE_FILES:
+        _run.add_artifact(cm_path)
 
 
 @ex.capture
