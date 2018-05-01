@@ -767,11 +767,11 @@ def train(train_path, _log, _run, dev_path=None):
         train_feedforward()
 
     _log.info('Evaluating on train corpus')
-    train_f1 = evaluate(train_path)
-    _log.info('Result on train corpus: f1 %.2f', 100 * train_f1)
+    train_f1 = 100 * evaluate(train_path)
+    _log.info('Result on train corpus: f1 %.2f', train_f1)
     _run.log_scalar('final_f1(train)', train_f1)
     if dev_path is not None:
         _log.info('Evaluating on dev corpus')
-        dev_f1 = evaluate(dev_path)
-        _log.info('Result on dev corpus: f1 %.2f', 100 * dev_f1)
+        dev_f1 = 100 * evaluate(dev_path)
+        _log.info('Result on dev corpus: f1 %.2f', dev_f1)
         _run.log_scalar('final_f1(dev)', dev_f1)
