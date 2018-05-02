@@ -568,7 +568,7 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
             _run.log_scalar('loss(dev)', dev_loss, step=state['t'])
             _run.log_scalar('f1(dev)', dev_f1, step=state['t'])
             for tag, meter in per_tag_f1_meter.items():
-                _run.log_scalar(f'f1(dev, {tag})', meter.value()[0], step=state['t'])
+                _run.log_scalar(f'f1(dev, {tag})', 100 * meter.value()[0], step=state['t'])
 
             scheduler.step(dev_f1, epoch=state['epoch'])
             if dev_f1 >= state['best_f1'] + tol:
