@@ -114,11 +114,11 @@ class FeedforwardTagger(nn.Module):
         return self.word_embedding.padding_idx
 
     @property
-    def use_crf(self) -> bool:
+    def uses_crf(self) -> bool:
         return self.crf is not None
 
     @property
-    def use_pretrained_embedding(self) -> bool:
+    def uses_pretrained_embedding(self) -> bool:
         return self.pretrained_embedding is not None
 
     def reset_parameters(self) -> None:
@@ -126,9 +126,9 @@ class FeedforwardTagger(nn.Module):
         init.constant(self.ff[0].bias, 0)
         init.xavier_uniform(self.ff[-1].weight)
         init.constant(self.ff[-1].bias, 0)
-        if self.use_crf:
+        if self.uses_crf:
             self.crf.reset_parameters()
-        if self.use_pretrained_embedding:
+        if self.uses_pretrained_embedding:
             init.xavier_uniform(
                 self.embedding_projection[0].weight, gain=init.calculate_gain('tanh'))
             init.constant(self.embedding_projection[0].bias, 0)
@@ -137,7 +137,7 @@ class FeedforwardTagger(nn.Module):
         self._check_dims_and_sizes(words, tags=tags, mask=mask)
         # shape: (batch_size, seq_length, num_tags)
         emissions = self._compute_emissions(words)
-        if self.use_crf:
+        if self.uses_crf:
             # shape: (batch_size,)
             return self._compute_crf_loss(emissions, tags, mask=mask)
         # shape: (batch_size,)
@@ -148,7 +148,7 @@ class FeedforwardTagger(nn.Module):
         with evaluation(self):
             # shape: (batch_size, seq_length, num_tags)
             emissions = self._compute_emissions(words)
-            if self.use_crf:
+            if self.uses_crf:
                 predictions = self._decode_with_crf(emissions, mask=mask)
             else:
                 predictions = self._greedy_decode(emissions, mask=mask)
@@ -198,7 +198,7 @@ class FeedforwardTagger(nn.Module):
 
         # shape: (batch_size, seq_length, word_embedding_size)
         embedded = self.word_embedding(words)
-        if self.use_pretrained_embedding:
+        if self.uses_pretrained_embedding:
             assert self.pretrained_embedding is not None
             # shape: (batch_size, seq_length, pretrained_embedding_size)
             pretrained = self.pretrained_embedding(words)
