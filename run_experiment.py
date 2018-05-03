@@ -409,7 +409,7 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
                       print_every=10, max_epochs=20, stopping_patience=5, scheduler_patience=2,
                       tol=0.01, scheduler_verbose=False, resume_from=None):
     _log.info('Creating save directory %s if it does not exist', save_dir)
-    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(save_dir)
 
     # Create fields
     WORDS = Field(  # no `lower` because it's done in `CorpusReader`
