@@ -1,6 +1,7 @@
 from collections import Counter
 from contextlib import contextmanager
-from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
+from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple, Union
+import warnings
 
 from torch.autograd import Variable as Var
 from torchcrf import CRF
@@ -64,7 +65,11 @@ class FeedforwardTagger(nn.Module):
     def __init__(self,
                  num_words: int,
                  num_tags: int,
+                 num_prefixes: Optional[Tuple[int, int]] = None,
+                 num_suffixes: Optional[Tuple[int, int]] = None,
                  word_embedding_size: int = 100,
+                 prefix_embedding_size: Union[Tuple[int, int], int] = 20,
+                 suffix_embedding_size: Union[Tuple[int, int], int] = 20,
                  window: int = 2,
                  hidden_size: int = 100,
                  dropout: float = 0.5,
@@ -75,9 +80,31 @@ class FeedforwardTagger(nn.Module):
         super().__init__()
 
         self.word_embedding = nn.Embedding(num_words, word_embedding_size, padding_idx=padding_idx)
+        self.prefix_embedding = None
+        self.suffix_embedding = None
         num_ctx_words = 2 * window + 1
+        total_features_size = num_ctx_words * word_embedding_size
+
+        if num_prefixes is not None:
+            if isinstance(prefix_embedding_size, int):
+                prefix_embedding_size = (prefix_embedding_size, prefix_embedding_size)
+            self.prefix_embedding = nn.ModuleList([
+                nn.Embedding(num_prefixes[0], prefix_embedding_size[0], padding_idx=padding_idx),
+                nn.Embedding(num_prefixes[1], prefix_embedding_size[1], padding_idx=padding_idx),
+            ])
+            total_features_size += sum(prefix_embedding_size)
+
+        if num_suffixes is not None:
+            if isinstance(suffix_embedding_size, int):
+                suffix_embedding_size = (suffix_embedding_size, suffix_embedding_size)
+            self.suffix_embedding = nn.ModuleList([
+                nn.Embedding(num_suffixes[0], suffix_embedding_size[0], padding_idx=padding_idx),
+                nn.Embedding(num_suffixes[1], suffix_embedding_size[1], padding_idx=padding_idx),
+            ])
+            total_features_size += sum(suffix_embedding_size)
+
         self.ff = nn.Sequential(
-            nn.Linear(word_embedding_size * num_ctx_words, hidden_size),
+            nn.Linear(total_features_size, hidden_size),
             nn.Tanh(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size, num_tags),
@@ -104,14 +131,45 @@ class FeedforwardTagger(nn.Module):
         return self.word_embedding.embedding_dim
 
     @property
+    def prefix_embedding_size(self) -> Optional[Tuple[int, int]]:
+        if not self.uses_prefix:
+            return None
+        assert self.prefix_embedding is not None
+        return (
+            self.prefix_embedding[0].embedding_dim,
+            self.prefix_embedding[1].embedding_dim,
+        )
+
+    @property
+    def suffix_embedding_size(self) -> Optional[Tuple[int, int]]:
+        if not self.uses_suffix:
+            return None
+        assert self.suffix_embedding is not None
+        return (
+            self.suffix_embedding[0].embedding_dim,
+            self.suffix_embedding[1].embedding_dim,
+        )
+
+    @property
     def window(self) -> int:
         assert isinstance(self.ff[0], nn.Linear)
-        assert self.ff[0].in_features % self.word_embedding_size == 0
-        return (self.ff[0].in_features // self.word_embedding_size - 1) // 2
+        total_features_size = self.ff[0].in_features
+        total_features_size -= sum(self.prefix_embedding_size) if self.uses_prefix else 0  # noqa: T484
+        total_features_size -= sum(self.suffix_embedding_size) if self.uses_suffix else 0  # noqa: T484
+        assert total_features_size % self.word_embedding_size == 0
+        return (total_features_size // self.word_embedding_size - 1) // 2
 
     @property
     def padding_idx(self) -> int:
         return self.word_embedding.padding_idx
+
+    @property
+    def uses_prefix(self) -> bool:
+        return self.prefix_embedding is not None
+
+    @property
+    def uses_suffix(self) -> bool:
+        return self.suffix_embedding is not None
 
     @property
     def uses_crf(self) -> bool:
@@ -122,21 +180,44 @@ class FeedforwardTagger(nn.Module):
         return self.pretrained_embedding is not None
 
     def reset_parameters(self) -> None:
+        self.word_embedding.reset_parameters()
+
+        if self.uses_prefix:
+            assert self.prefix_embedding is not None
+            for emb in self.prefix_embedding:
+                emb.reset_parameters()
+
+        if self.uses_suffix:
+            assert self.suffix_embedding is not None
+            for emb in self.suffix_embedding:
+                emb.reset_parameters()
+
         init.xavier_uniform(self.ff[0].weight, gain=init.calculate_gain('tanh'))
         init.constant(self.ff[0].bias, 0)
         init.xavier_uniform(self.ff[-1].weight)
         init.constant(self.ff[-1].bias, 0)
+
         if self.uses_crf:
             self.crf.reset_parameters()
+
         if self.uses_pretrained_embedding:
             init.xavier_uniform(
                 self.embedding_projection[0].weight, gain=init.calculate_gain('tanh'))
             init.constant(self.embedding_projection[0].bias, 0)
 
-    def forward(self, words: Var, tags: Var, mask: Optional[Var] = None) -> Var:
-        self._check_dims_and_sizes(words, tags=tags, mask=mask)
+    def forward(self,
+                words: Var,
+                tags: Var,
+                prefixes: Optional[Var] = None,
+                suffixes: Optional[Var] = None,
+                mask: Optional[Var] = None,
+                ) -> Var:
+        self._check_dims_and_sizes(
+            words, prefixes=prefixes, suffixes=suffixes, tags=tags, mask=mask)
+
         # shape: (batch_size, seq_length, num_tags)
-        emissions = self._compute_emissions(words)
+        emissions = self._compute_emissions(words, prefixes=prefixes, suffixes=suffixes)
+
         if self.uses_crf:
             # shape: (batch_size,)
             return self._compute_crf_loss(emissions, tags, mask=mask)
@@ -147,11 +228,16 @@ class FeedforwardTagger(nn.Module):
         # shape: (batch_size,)
         return self._compute_cross_entropy_loss(emissions, tags, mask)
 
-    def decode(self, words: Var, mask: Optional[Var] = None) -> List[List[int]]:
-        self._check_dims_and_sizes(words, mask=mask)
+    def decode(self,
+               words: Var,
+               prefixes: Optional[Var] = None,
+               suffixes: Optional[Var] = None,
+               mask: Optional[Var] = None,
+               ) -> List[List[int]]:
+        self._check_dims_and_sizes(words, prefixes=prefixes, suffixes=suffixes, mask=mask)
         with evaluation(self):
             # shape: (batch_size, seq_length, num_tags)
-            emissions = self._compute_emissions(words)
+            emissions = self._compute_emissions(words, prefixes=prefixes, suffixes=suffixes)
             if self.uses_crf:
                 predictions = self._decode_with_crf(emissions, mask=mask)
             else:
@@ -160,41 +246,84 @@ class FeedforwardTagger(nn.Module):
 
     def _check_dims_and_sizes(self,
                               words: Var,
+                              prefixes: Optional[Var] = None,
+                              suffixes: Optional[Var] = None,
                               tags: Optional[Var] = None,
                               mask: Optional[Var] = None,
                               ) -> None:
         if words.dim() != 2:
             raise ValueError('expected words to have dim of 2, got', words.dim())
-        if tags is not None and words.size() != tags.size():
-            raise ValueError(
-                'expected words and tags to have the same size (batch_size, seq_length)')
-        if mask is not None and mask.size() != words.size():
-            raise ValueError(
-                'expected words and mask to have the same size (batch_size, seq_length)')
-
-    def _compute_emissions(self, words: Var) -> Var:
-        assert words.dim() == 2
+        if self.uses_prefix and prefixes is None:
+            raise ValueError('model uses prefix but prefixes are not passed')
+        if self.uses_suffix and suffixes is None:
+            raise ValueError('model uses suffix but suffixes are not passed')
 
         batch_size, seq_length = words.size()
+
+        if prefixes is not None and prefixes.size() != (batch_size, seq_length, 2):
+            raise ValueError(
+                f'expected prefixes to have size of ({batch_size}, {seq_length}, 2), got',
+                tuple(prefixes.size()))
+        if suffixes is not None and suffixes.size() != (batch_size, seq_length, 2):
+            raise ValueError(
+                f'expected suffixes to have size of ({batch_size}, {seq_length}, 2), got',
+                tuple(suffixes.size()))
+        if tags is not None and words.size() != tags.size():
+            raise ValueError(
+                f'expected tags to have size of ({batch_size}, {seq_length}), got', tuple(tags.size()))
+        if mask is not None and words.size() != mask.size():
+            raise ValueError(
+                f'expected mask to have size of ({batch_size}, {seq_length}), got', tuple(mask.size()))
+
+    def _compute_emissions(self,
+                           words: Var,
+                           prefixes: Optional[Var] = None,
+                           suffixes: Optional[Var] = None,
+                           ) -> Var:
+        assert words.dim() == 2
+        batch_size, seq_length = words.size()
+        assert prefixes is None or prefixes.size() == (batch_size, seq_length, 2)
+        assert suffixes is None or suffixes.size() == (batch_size, seq_length, 2)
 
         # shape: (batch_size, seq_length + window)
         padded = torch.cat((self._get_padding(batch_size), words), 1)  # pad left
         # shape: (batch_size, seq_length + 2*window)
         padded = torch.cat((padded, self._get_padding(batch_size)), 1)  # pad right
         # shape: (batch_size, seq_length + 2*window, word_embedding_size)
-        embedded = self._embed_words(padded)
+        embedded_words = self._embed_words(padded)
+        # shape: (batch_size, seq_length, total_prefix_embedding_size)
+        embedded_prefixes = self._embed_prefixes(prefixes)
+        # shape: (batch_size, seq_length, total_suffix_embedding_size)
+        embedded_suffixes = self._embed_suffixes(suffixes)
 
-        result = []
+        temp = []
         for i in range(seq_length):
             lo, hi = i, i + 2 * self.window + 1
-            inputs = embedded[:, lo:hi, :].contiguous()
             # shape: (batch_size, (2*window + 1) * word_embedding_size)
-            inputs = inputs.view(batch_size, -1)
-            # shape: (batch_size, num_tags)
-            outputs = self.ff(inputs)
-            result.append(outputs)
+            word_feats = embedded_words[:, lo:hi, :].contiguous().view(batch_size, -1)
+            temp.append(word_feats)
+        # shape: (batch_size, seq_length, (2*window + 1) * word_embedding_size)
+        word_features = torch.stack(temp, dim=1)
+
+        affix_features = None
+        if embedded_prefixes is not None and embedded_suffixes is not None:
+            # shape: (batch_size, seq_length, total_prefix_emb_size + total_suffix_emb_size)
+            affix_features = torch.cat((embedded_prefixes, embedded_suffixes), dim=-1).contiguous()
+        elif embedded_prefixes is not None:
+            # shape: (batch_size, seq_length, total_prefix_emb_size)
+            affix_features = embedded_prefixes
+        elif embedded_suffixes is not None:
+            # shape: (batch_size, seq_length, total_suffix_emb_size)
+            affix_features = embedded_suffixes
+
+        # shape: (batch_size, seq_length, (2*window + 1) * word_embedding_size)
+        inputs = word_features
+        if affix_features is not None:
+            # shape: (batch_size, seq_length, (2*window+1)*word_embedding_size+total_affix_emb_size)
+            inputs = torch.cat((inputs, affix_features), dim=-1)
+
         # shape: (batch_size, seq_length, num_tags)
-        return torch.stack(result, dim=1)
+        return self.ff(inputs)
 
     def _embed_words(self, words: Var) -> Var:
         assert words.dim() == 2
@@ -211,6 +340,31 @@ class FeedforwardTagger(nn.Module):
             # shape: (batch_size, seq_length, word_embedding_size)
             embedded = self.embedding_projection(embedded)
         return embedded
+
+    def _embed_prefixes(self, prefixes: Optional[Var] = None) -> Optional[Var]:
+        return self._embed_affixes('prefix', affixes=prefixes)
+
+    def _embed_suffixes(self, suffixes: Optional[Var] = None) -> Optional[Var]:
+        return self._embed_affixes('suffix', affixes=suffixes)
+
+    def _embed_affixes(self, name: str, affixes: Optional[Var] = None) -> Optional[Var]:
+        assert not getattr(self, f'uses_{name}') or affixes is not None
+        assert affixes is None or (affixes.dim() == 3 and affixes.size(-1) == 2)
+        # affixes shape: (batch_size, seq_length, 2)
+        if affixes is None:
+            return None
+        if not getattr(self, f'uses_{name}'):
+            warnings.warn(f'the model does not use {name} features but {name} is passed, ignoring')
+            return None
+
+        assert getattr(self, f'{name}_embedding') is not None
+        embedded = []
+        for i in range(affixes.size(-1)):
+            embedding = getattr(self, f'{name}_embedding')
+            # shape: (batch_size, seq_length, affix_embedding_size[i])
+            x = embedding[i](affixes[:, :, i])
+            embedded.append(x)
+        return torch.cat(embedded, dim=-1)
 
     def _compute_crf_loss(self, emissions: Var, tags: Var, mask: Optional[Var] = None) -> Var:
         assert emissions.dim() == 3
@@ -239,7 +393,7 @@ class FeedforwardTagger(nn.Module):
         # shape: (batch_size * seq_length,)
         tags = tags.view(-1)
         # shape: (batch_size * seq_length,)
-        entropy = F.cross_entropy(emissions, tags, ignore_index=self.padding_idx, reduce=False)
+        entropy = F.cross_entropy(emissions, tags, reduce=False)
         # shape: (batch_size, seq_length)
         entropy = entropy.view(batch_size, -1)
         # shape: (batch_size,)

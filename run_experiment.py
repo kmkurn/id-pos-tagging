@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from collections import Counter, defaultdict
+from collections import Counter
 import enum
 import json
 import os
@@ -89,6 +89,8 @@ def default_conf():
     else:
         # path to save directory (models and checkpoints will be saved here)
         save_dir = 'save_dir'
+        # whether to overwrite save_dir
+        overwrite = False
         # resume training from the checkpoint saved in this directory
         resume_from = None
         # words occurring fewer than this value will not be included in the vocab
@@ -97,6 +99,18 @@ def default_conf():
         window = 2
         # size of word embedding
         word_embedding_size = 100
+        # whether to use prefix features
+        use_prefix = False
+        # prefixes occurring fewer than this value will not be included in the vocab
+        min_prefix_freq = 5
+        # size of prefix embedding, can be tuple of 2 elements for 2- and 3-prefix resp.
+        prefix_embedding_size = 20
+        # whether to use suffix features
+        use_suffix = False
+        # suffixes occurring fewer than this value will not be included in the vocab
+        min_suffix_freq = 5
+        # size of suffix embedding, can be tuple of 2 elements for 2- and 3-suffix resp.
+        suffix_embedding_size = 20
         # size of hidden layer
         hidden_size = 100
         # dropout rate
@@ -106,7 +120,7 @@ def default_conf():
         # learning rate
         lr = 0.001
         # batch size
-        batch_size = 16
+        batch_size = 256
         # GPU device, or -1 for CPU
         device = 0 if torch.cuda.is_available() else -1
         # print training log every this iterations
@@ -255,22 +269,26 @@ def load_fields(save_dir, _log, _run):
 
 
 @ex.capture
-def make_dataset(path, fields, _log, name='train'):
-    assert len(fields) in (2, 3), 'fields should contain 2 or 3 elements'
+def make_dataset(path, fields, _log, name='train', use_prefix=False, use_suffix=False):
+    assert len(fields) in range(2, 8), 'fields should have between 2 and 7 elements'
 
     _log.info('Creating %s dataset', name)
-    if isinstance(path, str):
-        reader = read_corpus(path, name=name)
-    else:
-        reader = path
+    reader = read_corpus(path, name=name) if isinstance(path, str) else path
     examples = []
     for id_, tagged_sent in enumerate(reader.tagged_sents()):
         words, tags = zip(*tagged_sent)
-        if len(fields) == 3:
-            example = Example.fromlist([words, tags, id_], fields)
-        else:
-            example = Example.fromlist([words, tags], fields)
-        examples.append(example)
+        data = [words, tags]
+        if use_prefix:
+            prefs_2 = [w[:2] for w in words]
+            prefs_3 = [w[:3] for w in words]
+            data.extend([prefs_2, prefs_3])
+        if use_suffix:
+            suffs_2 = [w[-2:] for w in words]
+            suffs_3 = [w[-3:] for w in words]
+            data.extend([suffs_2, suffs_3])
+        if len(fields) in (3, 5, 7):
+            data.append(id_)
+        examples.append(Example.fromlist(data, fields))
     return Dataset(examples, fields)
 
 
@@ -283,15 +301,24 @@ def load_fasttext_embedding(_log):
 
 
 @ex.capture
-def build_vocab(fields, train_dataset, _log, min_word_freq=2, use_fasttext=False):
-    WORDS, TAGS = fields[0][1], fields[1][1]
+def build_vocab(fields, train_dataset, _log, min_word_freq=2, use_fasttext=False,
+                min_prefix_freq=5, min_suffix_freq=5):
+    assert fields, 'fields should not be empty'
 
     _log.info('Building vocabulary')
+
     vectors = load_fasttext_embedding() if use_fasttext else None
-    WORDS.build_vocab(train_dataset, min_freq=min_word_freq, vectors=vectors)
-    _log.info('Found %d words', len(WORDS.vocab))
-    TAGS.build_vocab(train_dataset)
-    _log.info('Found %d tags', len(TAGS.vocab))
+    for name, field in fields:
+        kwargs = {}
+        if name == 'words':
+            kwargs['min_freq'] = min_word_freq
+            kwargs['vectors'] = vectors
+        elif name.startswith('prefs'):
+            kwargs['min_freq'] = min_prefix_freq
+        elif name.startswith('suffs'):
+            kwargs['min_freq'] = min_suffix_freq
+        field.build_vocab(train_dataset, **kwargs)
+        _log.info('Found %d %s', len(field.vocab), name)
 
 
 MODEL_METADATA_FILENAME = 'model_metadata.json'
@@ -320,15 +347,23 @@ def load_model_metadata(save_dir, _log, _run):
 
 
 @ex.capture
-def get_model_metadata(fields, training=True, word_embedding_size=100, window=2,
-                       hidden_size=100, dropout=0.5, use_crf=False):
+def get_model_metadata(fields, training=True, use_prefix=False, use_suffix=True,
+                       word_embedding_size=100, prefix_embedding_size=20,
+                       suffix_embedding_size=20, window=2, hidden_size=100, dropout=0.5,
+                       use_crf=False):
+    assert len(fields) >= 2, 'fields should have at least 2 elements'
+
     WORDS, TAGS = fields[0][1], fields[1][1]
 
     if training:
         num_words, num_tags = len(WORDS.vocab), len(TAGS.vocab)
         args = (num_words, num_tags)
         kwargs = {
+            'num_prefixes': None,
+            'num_suffixes': None,
             'word_embedding_size': word_embedding_size,
+            'prefix_embedding_size': prefix_embedding_size,
+            'suffix_embedding_size': suffix_embedding_size,
             'window': window,
             'hidden_size': hidden_size,
             'dropout': dropout,
@@ -336,6 +371,14 @@ def get_model_metadata(fields, training=True, word_embedding_size=100, window=2,
             'padding_idx': WORDS.vocab.stoi[WORDS.pad_token],
             'pretrained_embedding': WORDS.vocab.vectors,
         }
+        if use_prefix:
+            assert len(fields) >= 4, 'fields should have at least 4 elements'
+            PREFIXES_2, PREFIXES_3 = fields[2][1], fields[3][1]
+            kwargs['num_prefixes'] = (len(PREFIXES_2.vocab), len(PREFIXES_3.vocab))
+        if use_suffix:
+            assert len(fields) >= 4, 'fields should have at least 4 elements'
+            SUFFIXES_2, SUFFIXES_3 = fields[-2][1], fields[-1][1]
+            kwargs['num_suffixes'] = (len(SUFFIXES_2.vocab), len(SUFFIXES_3.vocab))
         return args, kwargs
 
     metadata = load_model_metadata()
@@ -407,21 +450,31 @@ def load_checkpoint(resume_from, _log, _run, is_best=False):
 @ex.capture
 def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_size=16, device=-1,
                       print_every=10, max_epochs=20, stopping_patience=5, scheduler_patience=2,
-                      tol=0.01, scheduler_verbose=False, resume_from=None):
+                      tol=0.01, scheduler_verbose=False, resume_from=None, use_prefix=False,
+                      use_suffix=False, overwrite=False):
     _log.info('Creating save directory %s if it does not exist', save_dir)
-    os.makedirs(save_dir)
+    os.makedirs(save_dir, exist_ok=overwrite)
 
     # Create fields
-    WORDS = Field(  # no `lower` because it's done in `CorpusReader`
-        batch_first=True, include_lengths=True)
-    TAGS = Field(batch_first=True, unk_token=None)
+    WORDS = Field(batch_first=True)
+    TAGS = Field(batch_first=True)  # dataset is small so at test time tags might be unk
     fields = [('words', WORDS), ('tags', TAGS)]
+    if use_prefix:
+        PREFIXES_2 = Field(batch_first=True)
+        PREFIXES_3 = Field(batch_first=True)
+        fields.extend([('prefs_2', PREFIXES_2), ('prefs_3', PREFIXES_3)])
+    if use_suffix:
+        SUFFIXES_2 = Field(batch_first=True)
+        SUFFIXES_3 = Field(batch_first=True)
+        fields.extend([('suffs_2', SUFFIXES_2), ('suffs_3', SUFFIXES_3)])
 
     # Create datasets and iterators
     train_dataset = make_dataset(train_path, fields)
     sort_key = lambda ex: len(ex.words)  # noqa: E731
     train_iter = BucketIterator(
         train_dataset, batch_size, sort_key=sort_key, device=device, repeat=False)
+    train_eval_iter = BucketIterator(
+        train_dataset, batch_size, sort_key=sort_key, device=device, train=False)
     dev_iter = None
 
     if dev_path is not None:
@@ -446,31 +499,42 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
     # Create engine, meters, and timers
     engine = tnt.engine.Engine()
     loss_meter = tnt.meter.AverageValueMeter()
-    f1_meter = tnt.meter.AverageValueMeter()
-    per_tag_f1_meter = defaultdict(tnt.meter.AverageValueMeter)
     speed_meter = tnt.meter.AverageValueMeter()
+    references = []
+    hypotheses = []
     train_timer = tnt.meter.TimeMeter(None)
     epoch_timer = tnt.meter.TimeMeter(None)
     batch_timer = tnt.meter.TimeMeter(None)
 
     def net(minibatch):
         # shape: (batch_size, seq_length)
-        words, _ = minibatch.words
+        words = minibatch.words
+        prefixes, suffixes = None, None
+        if use_prefix:
+            # shape: (batch_size, seq_length)
+            prefs_2, prefs_3 = minibatch.prefs_2, minibatch.prefs_3
+            # shape: (batch_size, seq_length, 2)
+            prefixes = torch.stack((prefs_2, prefs_3), dim=-1)
+        if use_suffix:
+            # shape: (batch_size, seq_length)
+            suffs_2, suffs_3 = minibatch.suffs_2, minibatch.suffs_3
+            # shape: (batch_size, seq_length, 2)
+            suffixes = torch.stack((suffs_2, suffs_3), dim=-1)
         # shape: (batch_size, seq_length)
         mask = words != WORDS.vocab.stoi[WORDS.pad_token]
         # shape: (batch_size,)
-        loss = model(words, minibatch.tags, mask=mask)
+        loss = model(words, minibatch.tags, prefixes=prefixes, suffixes=suffixes, mask=mask)
         # shape: (1,)
         loss = loss.mean()
 
-        return loss, model.decode(words, mask=mask)
+        return loss, model.decode(words, prefixes=prefixes, suffixes=suffixes, mask=mask)
 
     def reset_meters():
         loss_meter.reset()
-        f1_meter.reset()
         speed_meter.reset()
-        for meter in per_tag_f1_meter.values():
-            meter.reset()
+        nonlocal references, hypotheses
+        references = []
+        hypotheses = []
 
     def make_checkpoint(state, is_best=False):
         save_checkpoint({
@@ -481,6 +545,25 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
             'model': model.state_dict(),
             'optimizer': state['optimizer'].state_dict(),
         }, is_best=is_best)
+
+    def evaluate_on(name):
+        assert name in ('train', 'dev')
+        iterator = train_eval_iter if name == 'train' else dev_iter
+        _log.info(f'Evaluating on {name} corpus')
+        engine.test(net, iterator)
+        loss = loss_meter.mean
+        f1 = f1_score(references, hypotheses, average='weighted')
+        _log.info('Result on %s corpus (%.2fs): %.2f samples/s | loss %.4f | f1 %.2f',
+                  name, epoch_timer.value(), speed_meter.mean, loss, 100 * f1)
+        _run.log_scalar(f'loss({name})', loss)
+        _run.log_scalar(f'f1({name})', f1)
+        # Per tag F1
+        labels = list(set(references + hypotheses))
+        per_tag_f1 = f1_score(references, hypotheses, average=None, labels=labels)
+        for score, tag in zip(per_tag_f1, labels):
+            scalar_name = f'f1({name}, {tag})'
+            _run.log_scalar(scalar_name, score)
+        return f1
 
     def on_start(state):
         if state['train']:
@@ -511,65 +594,43 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
         batch_timer.reset()
 
     def on_forward(state):
-        loss_meter.add(state['loss'].data[0])
+        batch_loss = state['loss'].data[0]
+        loss_meter.add(batch_loss)
         # shape: (batch_size, seq_length)
         golds = state['sample'].tags
-        # Compute weighted macro-averaged F1
-        reference, hypothesis = [], []
-        for gold, pred in zip(golds, state['output']):
-            gold = gold[:len(pred)]
-            reference.extend(gold.data)
-            hypothesis.extend(pred)
-        # Overall
-        f1 = f1_score(reference, hypothesis, average='weighted')
-        f1_meter.add(f1)
-        # Per tag
-        reference = [TAGS.vocab.itos[t] for t in reference]
-        hypothesis = [TAGS.vocab.itos[t] for t in hypothesis]
-        labels = list(set(reference + hypothesis))
-        per_tag_f1 = f1_score(reference, hypothesis, average=None, labels=labels)
-        for f1, tag in zip(per_tag_f1, labels):
-            per_tag_f1_meter[tag].add(f1)
 
         elapsed_time = batch_timer.value()
-        speed = golds.size(0) / elapsed_time
-        speed_meter.add(speed)
+        batch_speed = golds.size(0) / elapsed_time
+        speed_meter.add(batch_speed)
 
-        if state['train'] and (state['t'] + 1) % print_every == 0:
+        if not state['train']:
+            for gold, pred in zip(golds, state['output']):
+                gold = gold[:len(pred)]
+                references.extend(gold.data)
+                hypotheses.extend(pred)
+        elif (state['t'] + 1) % print_every == 0:
+            batch_ref, batch_hyp = [], []
+            for gold, pred in zip(golds, state['output']):
+                gold = gold[:len(pred)]
+                batch_ref.extend(gold.data)
+                batch_hyp.extend(pred)
+            batch_f1 = f1_score(batch_ref, batch_hyp, average='weighted')
             epoch = (state['t'] + 1) / len(state['iterator'])
-            batch_loss = loss_meter.value()[0]
-            batch_f1 = 100 * f1_meter.value()[0]
             _log.info(
-                'Epoch %.2f (%.2fms): %.2f samples/s | loss %.4f | f1 %.2f',
-                epoch, 1000 * elapsed_time, speed_meter.value()[0], batch_loss, batch_f1)
+                'Epoch %.2f (%5.2fms): %.2f samples/s | loss %.4f | f1 %.2f',
+                epoch, 1000 * elapsed_time, batch_speed, batch_loss, batch_f1)
             _run.log_scalar('batch_loss(train)', batch_loss, step=state['t'])
             _run.log_scalar('batch_f1(train)', batch_f1, step=state['t'])
 
     def on_end_epoch(state):
-        elapsed_time = epoch_timer.value()
-        train_loss = loss_meter.value()[0]
-        train_f1 = 100 * f1_meter.value()[0]
         _log.info(
-            'Epoch %d done (%.2fs): %.2f samples/s | loss %.4f | f1 %.2f',
-            state['epoch'], epoch_timer.value(), speed_meter.value()[0], train_loss, train_f1)
-        _run.log_scalar('loss(train)', train_loss, step=state['t'])
-        _run.log_scalar('f1(train)', train_f1, step=state['t'])
-        for tag, meter in per_tag_f1_meter.items():
-            _run.log_scalar(f'f1(train, {tag})', meter.value()[0], step=state['t'])
+            'Epoch %d done (%.2fs): mean speed %.2f samples/s | mean loss %.4f',
+            state['epoch'], epoch_timer.value(), speed_meter.mean, loss_meter.mean)
+        evaluate_on('train')
 
         is_best = False
         if dev_iter is not None:
-            _log.info('Evaluating on dev corpus')
-            engine.test(net, dev_iter)
-            dev_loss = loss_meter.value()[0]
-            dev_f1 = 100 * f1_meter.value()[0]
-            _log.info('Result on dev corpus (%.2fs): %.2f samples/s | loss %.4f | f1 %.2f',
-                      epoch_timer.value(), speed_meter.value()[0], dev_loss, dev_f1)
-            _run.log_scalar('loss(dev)', dev_loss, step=state['t'])
-            _run.log_scalar('f1(dev)', dev_f1, step=state['t'])
-            for tag, meter in per_tag_f1_meter.items():
-                _run.log_scalar(f'f1(dev, {tag})', 100 * meter.value()[0], step=state['t'])
-
+            dev_f1 = evaluate_on('dev')
             scheduler.step(dev_f1, epoch=state['epoch'])
             if dev_f1 >= state['best_f1'] + tol:
                 _log.info('New best result on dev corpus')
@@ -643,28 +704,46 @@ def predict_crf(reader, model_path, _log, _run):
 def predict_feedforward(reader, save_dir, _log, _run, device=-1, batch_size=16):
     fields = load_fields()
     WORDS, TAGS = fields[0][1], fields[1][1]
+    # We need IDS field to sort the examples back to its original order because
+    # the iterator will sort them according to length to minimize padding
     IDS = Field(sequential=False, use_vocab=False)
     fields.append(('index', IDS))
 
     checkpoint = load_checkpoint(save_dir, is_best=True)
     model = make_feedforward_model(fields[:-1], training=False, checkpoint=checkpoint)
+    assert not model.uses_prefix or len(fields) > 3, 'fields should contain prefixes'
+    assert not model.uses_suffix or len(fields) > 3, 'fields should contain suffixes'
+    assert not model.training
 
-    test_dataset = make_dataset(reader, fields, name='test')
+    test_dataset = make_dataset(
+        reader, fields, name='test', use_prefix=model.uses_prefix, use_suffix=model.uses_suffix)
     sort_key = lambda ex: len(ex.words)  # noqa: E731
     test_iter = BucketIterator(
         test_dataset, batch_size, sort_key=sort_key, device=device, train=False)
 
     indexed_predictions = []
     for minibatch in test_iter:
-        # shape: (batch_size, seq_length), (batch_size,)
-        words, lengths = minibatch.words
         # shape: (batch_size, seq_length)
-        predictions = model.decode(words)
+        words = minibatch.words
+        prefixes, suffixes = None, None
+        if model.uses_prefix:
+            # shape: (batch_size, seq_length)
+            prefs_2, prefs_3 = minibatch.prefs_2, minibatch.prefs_3
+            # shape: (batch_size, seq_length, 2)
+            prefixes = torch.stack((prefs_2, prefs_3), dim=-1)
+        if model.uses_suffix:
+            # shape: (batch_size, seq_length)
+            suffs_2, suffs_3 = minibatch.suffs_2, minibatch.suffs_3
+            # shape: (batch_size, seq_length, 2)
+            suffixes = torch.stack((suffs_2, suffs_3), dim=-1)
+        # shape: (batch_size, seq_length)
+        mask = words != WORDS.vocab.stoi[WORDS.pad_token]
+        # shape: (batch_size, seq_length)
+        predictions = model.decode(words, prefixes=prefixes, suffixes=suffixes, mask=mask)
         # shape: (batch_size,)
         index = minibatch.index
 
-        for i, pred, length in zip(index, predictions, lengths):
-            pred = pred[:length]
+        for i, pred in zip(index, predictions):
             indexed_predictions.append((i.data[0], pred))
 
     indexed_predictions.sort()
@@ -717,9 +796,9 @@ def plot_confusion_matrix(gold_labels, pred_labels, cm_path, _log, _run):
 
 
 @ex.capture
-def set_random_seed(_seed):
-    torch.manual_seed(_seed)
-    torch.cuda.manual_seed_all(_seed)
+def set_random_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 @ex.command(unobserved=True)
@@ -785,12 +864,13 @@ def train(train_path, _log, _run, dev_path=None):
     else:
         train_feedforward()
 
-    _log.info('Evaluating on train corpus')
-    train_f1 = 100 * evaluate(train_path)
-    _log.info('Result on train corpus: f1 %.2f', train_f1)
-    _run.log_scalar('final_f1(train)', train_f1)
-    if dev_path is not None:
-        _log.info('Evaluating on dev corpus')
-        dev_f1 = 100 * evaluate(dev_path)
-        _log.info('Result on dev corpus: f1 %.2f', dev_f1)
-        _run.log_scalar('final_f1(dev)', dev_f1)
+    if get_model_name_enum() is not ModelName.FF:
+        _log.info('Evaluating on train corpus')
+        train_f1 = evaluate(train_path)
+        _log.info('Result on train corpus: f1 %.2f', 100 * train_f1)
+        _run.log_scalar('final_f1(train)', train_f1)
+        if dev_path is not None:
+            _log.info('Evaluating on dev corpus')
+            dev_f1 = evaluate(dev_path)
+            _log.info('Result on dev corpus: f1 %.2f', 100 * dev_f1)
+            _run.log_scalar('final_f1(dev)', dev_f1)
