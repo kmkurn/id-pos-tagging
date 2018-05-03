@@ -140,8 +140,12 @@ class FeedforwardTagger(nn.Module):
         if self.uses_crf:
             # shape: (batch_size,)
             return self._compute_crf_loss(emissions, tags, mask=mask)
+
+        if mask is None:
+            # shape (batch_size, seq_length)
+            mask = self._get_mask_for(words)
         # shape: (batch_size,)
-        return self._compute_cross_entropy_loss(emissions, tags)
+        return self._compute_cross_entropy_loss(emissions, tags, mask)
 
     def decode(self, words: Var, mask: Optional[Var] = None) -> List[List[int]]:
         self._check_dims_and_sizes(words, mask=mask)
@@ -223,16 +227,23 @@ class FeedforwardTagger(nn.Module):
         # shape: (batch_size,)
         return -self.crf(emissions, tags, mask=mask, reduce=False)
 
-    def _compute_cross_entropy_loss(self, emissions: Var, tags: Var) -> Var:
+    def _compute_cross_entropy_loss(self, emissions: Var, tags: Var, mask: Var) -> Var:
         assert emissions.dim() == 3
         assert emissions.size()[:-1] == tags.size()
+        assert mask.size() == tags.size()
+
+        batch_size = emissions.size(0)
 
         # shape: (batch_size * seq_length, num_tags)
         emissions = emissions.view(-1, emissions.size(-1))
         # shape: (batch_size * seq_length,)
         tags = tags.view(-1)
+        # shape: (batch_size * seq_length,)
+        entropy = F.cross_entropy(emissions, tags, ignore_index=self.padding_idx, reduce=False)
+        # shape: (batch_size, seq_length)
+        entropy = entropy.view(batch_size, -1)
         # shape: (batch_size,)
-        return F.cross_entropy(emissions, tags, ignore_index=self.padding_idx, reduce=False)
+        return torch.sum(entropy * mask.float(), dim=-1)
 
     def _decode_with_crf(self, emissions: Var, mask: Optional[Var] = None) -> List[List[int]]:
         assert emissions.dim() == 3
