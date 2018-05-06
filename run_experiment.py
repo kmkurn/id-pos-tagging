@@ -321,7 +321,7 @@ def load_model_metadata(save_dir, _log, _run):
 
 @ex.capture
 def get_model_metadata(fields, training=True, word_embedding_size=100, window=2,
-                       hidden_size=100, dropout=0.5, use_crf=False, padding_idx=0):
+                       hidden_size=100, dropout=0.5, use_crf=False):
     WORDS, TAGS = fields[0][1], fields[1][1]
 
     if training:
@@ -333,7 +333,7 @@ def get_model_metadata(fields, training=True, word_embedding_size=100, window=2,
             'hidden_size': hidden_size,
             'dropout': dropout,
             'use_crf': use_crf,
-            'padding_idx': padding_idx,
+            'padding_idx': WORDS.vocab.stoi[WORDS.pad_token],
             'pretrained_embedding': WORDS.vocab.vectors,
         }
         return args, kwargs
