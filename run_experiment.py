@@ -132,7 +132,7 @@ def default_conf():
         # reduce LR when F1 score does not improve after this number of epochs
         scheduler_patience = 2
         # tolerance for comparing F1 score for early stopping
-        tol = 0.01
+        tol = 1e-4
         # whether to print to stdout when LR is reduced
         scheduler_verbose = False
         # use fasttext pretrained word embedding
@@ -553,8 +553,8 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
         engine.test(net, iterator)
         loss = loss_meter.mean
         f1 = f1_score(references, hypotheses, average='weighted')
-        _log.info('Result on %s corpus (%.2fs): %.2f samples/s | loss %.4f | f1 %.2f',
-                  name, epoch_timer.value(), speed_meter.mean, loss, 100 * f1)
+        _log.info('Result on %s corpus (%.2fs): %.2f samples/s | loss %.4f | f1 %s',
+                  name, epoch_timer.value(), speed_meter.mean, loss, f'{f1:.2%}')
         _run.log_scalar(f'loss({name})', loss)
         _run.log_scalar(f'f1({name})', f1)
         # Per tag F1
@@ -617,8 +617,8 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
             batch_f1 = f1_score(batch_ref, batch_hyp, average='weighted')
             epoch = (state['t'] + 1) / len(state['iterator'])
             _log.info(
-                'Epoch %.2f (%5.2fms): %.2f samples/s | loss %.4f | f1 %.2f',
-                epoch, 1000 * elapsed_time, batch_speed, batch_loss, batch_f1)
+                'Epoch %.2f (%5.2fms): %.2f samples/s | loss %.4f | f1 %s',
+                epoch, 1000 * elapsed_time, batch_speed, batch_loss, f'{batch_f1:.2%}')
             _run.log_scalar('batch_loss(train)', batch_loss, step=state['t'])
             _run.log_scalar('batch_f1(train)', batch_f1, step=state['t'])
 
@@ -867,10 +867,10 @@ def train(train_path, _log, _run, dev_path=None):
     if get_model_name_enum() is not ModelName.FF:
         _log.info('Evaluating on train corpus')
         train_f1 = evaluate(train_path)
-        _log.info('Result on train corpus: f1 %.2f', 100 * train_f1)
+        _log.info('Result on train corpus: f1 %s', f'{train_f1:.2%}')
         _run.log_scalar('final_f1(train)', train_f1)
         if dev_path is not None:
             _log.info('Evaluating on dev corpus')
             dev_f1 = evaluate(dev_path)
-            _log.info('Result on dev corpus: f1 %.2f', 100 * dev_f1)
+            _log.info('Result on dev corpus: f1 %s', f'{dev_f1:.2%}')
             _run.log_scalar('final_f1(dev)', dev_f1)
