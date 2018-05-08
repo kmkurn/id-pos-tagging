@@ -3,6 +3,7 @@
 from collections import Counter
 import enum
 import json
+import operator
 import os
 import pickle
 import shutil
@@ -48,6 +49,11 @@ class ModelName(enum.Enum):
     CRF = 'crf'
     # Feedforward neural network (Abka, 2016)
     FF = 'feedforward'
+
+
+class Comparing(enum.Enum):
+    F1 = 'f1'
+    LOSS = 'loss'
 
 
 @ex.config
@@ -127,11 +133,13 @@ def default_conf():
         print_every = 10
         # maximum number of training epochs
         max_epochs = 50
+        # what dev score to compare on end epoch [f1, loss]
+        comparing = Comparing.F1.value
         # wait for this number of times reducing LR before early stopping
         stopping_patience = 5
         # reduce LR when F1 score does not improve after this number of epochs
         scheduler_patience = 2
-        # tolerance for comparing F1 score for early stopping
+        # tolerance for comparing score for early stopping
         tol = 1e-4
         # whether to print to stdout when LR is reduced
         scheduler_verbose = False
@@ -451,7 +459,7 @@ def load_checkpoint(resume_from, _log, _run, is_best=False):
 def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_size=16, device=-1,
                       print_every=10, max_epochs=20, stopping_patience=5, scheduler_patience=2,
                       tol=0.01, scheduler_verbose=False, resume_from=None, use_prefix=False,
-                      use_suffix=False, overwrite=False):
+                      use_suffix=False, overwrite=False, comparing=Comparing.F1.value):
     _log.info('Creating save directory %s if it does not exist', save_dir)
     os.makedirs(save_dir, exist_ok=overwrite)
 
@@ -496,7 +504,7 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
         optimizer, mode='max', factor=0.5, patience=scheduler_patience, threshold=tol,
         threshold_mode='abs', verbose=scheduler_verbose)
 
-    # Create engine, meters, and timers
+    # Create engine, meters, timers, etc
     engine = tnt.engine.Engine()
     loss_meter = tnt.meter.AverageValueMeter()
     speed_meter = tnt.meter.AverageValueMeter()
@@ -505,6 +513,9 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
     train_timer = tnt.meter.TimeMeter(None)
     epoch_timer = tnt.meter.TimeMeter(None)
     batch_timer = tnt.meter.TimeMeter(None)
+    comp = Comparing(comparing)
+    comp_op = operator.ge if comp is Comparing.F1 else operator.le
+    sign = 1 if comp is Comparing.F1 else -1
 
     def net(minibatch):
         # shape: (batch_size, seq_length)
@@ -540,7 +551,7 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
         save_checkpoint({
             'epoch': state['epoch'],
             't': state['t'],
-            'best_f1': state['best_f1'],
+            'best_score': state['best_score'],
             'num_bad_epochs': state['num_bad_epochs'],
             'model': model.state_dict(),
             'optimizer': state['optimizer'].state_dict(),
@@ -549,12 +560,12 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
     def evaluate_on(name):
         assert name in ('train', 'dev')
         iterator = train_eval_iter if name == 'train' else dev_iter
-        _log.info(f'Evaluating on {name} corpus')
+        _log.info('Evaluating on %s', name)
         engine.test(net, iterator)
         loss = loss_meter.mean
         f1 = f1_score(references, hypotheses, average='weighted')
-        _log.info('Result on %s corpus (%.2fs): %.2f samples/s | loss %.4f | f1 %s',
-                  name, epoch_timer.value(), speed_meter.mean, loss, f'{f1:.2%}')
+        _log.info('** Result on %s (%.2fs): %.2f samples/s | loss %.4f | f1 %s',
+                  name.upper(), epoch_timer.value(), speed_meter.mean, loss, f'{f1:.2%}')
         _run.log_scalar(f'loss({name})', loss)
         _run.log_scalar(f'f1({name})', f1)
         # Per tag F1
@@ -563,17 +574,20 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
         for score, tag in zip(per_tag_f1, labels):
             scalar_name = f'f1({name}, {tag})'
             _run.log_scalar(scalar_name, score)
-        return f1
+        return loss, f1
 
     def on_start(state):
         if state['train']:
-            state.update({'best_f1': -float('inf'), 'num_bad_epochs': 0})
+            state.update({
+                'best_score': -sign * float('inf'),
+                'num_bad_epochs': 0,
+            })
             if checkpoint is not None:
                 _log.info('Resuming training from the checkpoint')
                 state.update({
                     'epoch': checkpoint['epoch'],
                     't': checkpoint['t'],
-                    'best_f1': checkpoint['best_f1'],
+                    'best_score': checkpoint['best_score'],
                     'num_bad_epochs': checkpoint['num_bad_epochs'],
                 })
             make_checkpoint(state, is_best=True)
@@ -630,11 +644,12 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
 
         is_best = False
         if dev_iter is not None:
-            dev_f1 = evaluate_on('dev')
-            scheduler.step(dev_f1, epoch=state['epoch'])
-            if dev_f1 >= state['best_f1'] + tol:
-                _log.info('New best result on dev corpus')
-                state.update({'best_f1': dev_f1, 'num_bad_epochs': 0})
+            dev_loss, dev_f1 = evaluate_on('dev')
+            score = dev_f1 if comp is Comparing.F1 else dev_loss
+            scheduler.step(score, epoch=state['epoch'])
+            if comp_op(score, state['best_score'] + sign * tol):
+                _log.info('** NEW best result on dev corpus')
+                state.update({'best_score': score, 'num_bad_epochs': 0})
                 is_best = True
             else:
                 state['num_bad_epochs'] += 1
