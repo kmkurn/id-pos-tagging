@@ -3,13 +3,16 @@ from contextlib import contextmanager
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple, Union
 import warnings
 
+from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 from torch.autograd import Variable as Var
 from torchcrf import CRF
 import torch
 import torch.nn as nn
+
 import torch.nn.functional as F
 import torch.nn.init as init
 
+from torchnlp.nn import Attention
 
 Word = str
 Tag = str
@@ -74,16 +77,20 @@ class FeedforwardTagger(nn.Module):
                  hidden_size: int = 100,
                  dropout: float = 0.5,
                  padding_idx: int = 0,
+                 use_lstm: bool = False,
+                 use_attention: bool = False,
                  use_crf: bool = False,
                  pretrained_embedding: Optional[torch.Tensor] = None,
                  ) -> None:
-        super().__init__()
+        super(FeedforwardTagger, self).__init__()
 
         self.word_embedding = nn.Embedding(num_words, word_embedding_size, padding_idx=padding_idx)
         self.prefix_embedding = None
         self.suffix_embedding = None
-        num_ctx_words = 2 * window + 1
-        total_features_size = num_ctx_words * word_embedding_size
+        total_features_size = word_embedding_size
+        total_features_size += word_embedding_size * window * 2
+
+        self.dropout = nn.Dropout(dropout)
 
         if num_prefixes is not None:
             if isinstance(prefix_embedding_size, int):
@@ -103,12 +110,26 @@ class FeedforwardTagger(nn.Module):
             ])
             total_features_size += sum(suffix_embedding_size)
 
+        ff_input_size = total_features_size
+        
+        self.lstm = None
+        if (True):
+            self.lstm = nn.LSTM(total_features_size, hidden_size,
+                                num_layers=2, bidirectional=True, batch_first=True)
+            ff_input_size = 2 * hidden_size
+        
+        self.attention = None
+        if (True):
+            self.attention = Attention(ff_input_size, attention_type = 'general')
+            ff_input_size *= 2
+         
         self.ff = nn.Sequential(
-            nn.Linear(total_features_size, hidden_size),
+            nn.Linear(ff_input_size, hidden_size),
             nn.Tanh(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size, num_tags),
         )
+
         self.crf = CRF(num_tags) if use_crf else None
 
         self.pretrained_embedding = None
@@ -153,7 +174,7 @@ class FeedforwardTagger(nn.Module):
     @property
     def window(self) -> int:
         assert isinstance(self.ff[0], nn.Linear)
-        total_features_size = self.ff[0].in_features
+        total_features_size = self.lstm.input_size if self.uses_lstm else self.ff[0].in_features
         total_features_size -= sum(self.prefix_embedding_size) if self.uses_prefix else 0  # noqa: T484
         total_features_size -= sum(self.suffix_embedding_size) if self.uses_suffix else 0  # noqa: T484
         assert total_features_size % self.word_embedding_size == 0
@@ -170,6 +191,14 @@ class FeedforwardTagger(nn.Module):
     @property
     def uses_suffix(self) -> bool:
         return self.suffix_embedding is not None
+
+    @property
+    def uses_lstm(self) -> bool:
+        return self.lstm is not None
+
+    @property
+    def uses_attention(self) -> bool:
+        return self.attention is not None
 
     @property
     def uses_crf(self) -> bool:
@@ -191,6 +220,9 @@ class FeedforwardTagger(nn.Module):
             assert self.suffix_embedding is not None
             for emb in self.suffix_embedding:
                 emb.reset_parameters()
+
+        if self.uses_lstm:
+            self.lstm.reset_parameters()
 
         init.xavier_uniform(self.ff[0].weight, gain=init.calculate_gain('tanh'))
         init.constant(self.ff[0].bias, 0)
@@ -216,7 +248,7 @@ class FeedforwardTagger(nn.Module):
             words, prefixes=prefixes, suffixes=suffixes, tags=tags, mask=mask)
 
         # shape: (batch_size, seq_length, num_tags)
-        emissions = self._compute_emissions(words, prefixes=prefixes, suffixes=suffixes)
+        emissions = self._compute_emissions(words, mask=mask, prefixes=prefixes, suffixes=suffixes)
 
         if self.uses_crf:
             # shape: (batch_size,)
@@ -237,7 +269,7 @@ class FeedforwardTagger(nn.Module):
         self._check_dims_and_sizes(words, prefixes=prefixes, suffixes=suffixes, mask=mask)
         with evaluation(self):
             # shape: (batch_size, seq_length, num_tags)
-            emissions = self._compute_emissions(words, prefixes=prefixes, suffixes=suffixes)
+            emissions = self._compute_emissions(words, mask=mask, prefixes=prefixes, suffixes=suffixes)
             if self.uses_crf:
                 predictions = self._decode_with_crf(emissions, mask=mask)
             else:
@@ -277,6 +309,7 @@ class FeedforwardTagger(nn.Module):
 
     def _compute_emissions(self,
                            words: Var,
+                           mask: Optional[Var] = None,
                            prefixes: Optional[Var] = None,
                            suffixes: Optional[Var] = None,
                            ) -> Var:
@@ -285,25 +318,33 @@ class FeedforwardTagger(nn.Module):
         assert prefixes is None or prefixes.size() == (batch_size, seq_length, 2)
         assert suffixes is None or suffixes.size() == (batch_size, seq_length, 2)
 
-        # shape: (batch_size, seq_length + window)
-        padded = torch.cat((self._get_padding(batch_size), words), 1)  # pad left
-        # shape: (batch_size, seq_length + 2*window)
-        padded = torch.cat((padded, self._get_padding(batch_size)), 1)  # pad right
+        if self.window > 0:
+            # shape: (batch_size, seq_length + window)
+            words = torch.cat((self._get_padding(batch_size), words), 1)  # pad left
+            # shape: (batch_size, seq_length + 2*window)
+            words = torch.cat((words, self._get_padding(batch_size)), 1)  # pad right
+        
         # shape: (batch_size, seq_length + 2*window, word_embedding_size)
-        embedded_words = self._embed_words(padded)
+        embedded_words = self._embed_words(words)
         # shape: (batch_size, seq_length, total_prefix_embedding_size)
         embedded_prefixes = self._embed_prefixes(prefixes)
         # shape: (batch_size, seq_length, total_suffix_embedding_size)
         embedded_suffixes = self._embed_suffixes(suffixes)
 
-        temp = []
-        for i in range(seq_length):
-            lo, hi = i, i + 2 * self.window + 1
-            # shape: (batch_size, (2*window + 1) * word_embedding_size)
-            word_feats = embedded_words[:, lo:hi, :].contiguous().view(batch_size, -1)
-            temp.append(word_feats)
-        # shape: (batch_size, seq_length, (2*window + 1) * word_embedding_size)
-        word_features = torch.stack(temp, dim=1)
+        embedded_words = self.dropout(embedded_words)
+        embedded_prefixes = self.dropout(embedded_prefixes)
+        embedded_suffixes = self.dropout(embedded_suffixes)
+
+        inputs = embedded_words
+        if self.window > 0:
+            temp = []
+            for i in range(seq_length):
+                lo, hi = i, i + 2 * self.window + 1
+                # shape: (batch_size, (2*window + 1) * word_embedding_size)
+                word_feats = embedded_words[:, lo:hi, :].contiguous().view(batch_size, -1)
+                temp.append(word_feats)
+            # shape: (batch_size, seq_length, (2*window + 1) * word_embedding_size)
+            inputs = torch.stack(temp, dim=1)
 
         affix_features = None
         if embedded_prefixes is not None and embedded_suffixes is not None:
@@ -316,11 +357,28 @@ class FeedforwardTagger(nn.Module):
             # shape: (batch_size, seq_length, total_suffix_emb_size)
             affix_features = embedded_suffixes
 
-        # shape: (batch_size, seq_length, (2*window + 1) * word_embedding_size)
-        inputs = word_features
         if affix_features is not None:
             # shape: (batch_size, seq_length, (2*window+1)*word_embedding_size+total_affix_emb_size)
             inputs = torch.cat((inputs, affix_features), dim=-1)
+
+        # apply Bidirectional LSTM
+        if self.uses_lstm:
+            seq_lengths = torch.sum(mask.int(),dim = 1)
+            seq_lengths, sent_perm = seq_lengths.sort(0, descending=True)
+            inputs = inputs[sent_perm]
+
+            packed_input = pack_padded_sequence(inputs, seq_lengths.cpu().data.numpy(), batch_first=True)
+     
+            lstm_out, _ = self.lstm(packed_input)      
+            lstm_out, _ = pad_packed_sequence(lstm_out, batch_first = True)
+
+            seq_lengths, original_perm = sent_perm.sort(0, descending=False)
+            inputs = lstm_out[original_perm]
+
+        # apply attention
+        if self.uses_attention:
+            context, _ = self.attention(inputs, inputs)
+            inputs = torch.cat((inputs, context), dim = 2)
 
         # shape: (batch_size, seq_length, num_tags)
         return self.ff(inputs)
