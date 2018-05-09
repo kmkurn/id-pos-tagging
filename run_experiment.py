@@ -115,6 +115,8 @@ def default_conf():
         hidden_size = 100
         # dropout rate
         dropout = 0.5
+        # whether to apply a biLSTM layer after embedding
+        use_lstm = False
         # whether to use CRF layer as output layer instead of softmax
         use_crf = False
         # learning rate
@@ -350,7 +352,7 @@ def load_model_metadata(save_dir, _log, _run):
 def get_model_metadata(fields, training=True, use_prefix=False, use_suffix=True,
                        word_embedding_size=100, prefix_embedding_size=20,
                        suffix_embedding_size=20, window=2, hidden_size=100, dropout=0.5,
-                       use_crf=False):
+                       use_lstm=False, use_crf=False):
     assert len(fields) >= 2, 'fields should have at least 2 elements'
 
     WORDS, TAGS = fields[0][1], fields[1][1]
@@ -367,6 +369,7 @@ def get_model_metadata(fields, training=True, use_prefix=False, use_suffix=True,
             'window': window,
             'hidden_size': hidden_size,
             'dropout': dropout,
+            'use_lstm': use_lstm,
             'use_crf': use_crf,
             'padding_idx': WORDS.vocab.stoi[WORDS.pad_token],
             'pretrained_embedding': WORDS.vocab.vectors,
