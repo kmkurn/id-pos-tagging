@@ -18,8 +18,6 @@ from spacy.tokens import Doc
 from torchtext.data import BucketIterator, Dataset, Example, Field
 from torchtext.vocab import FastText
 import dill
-import matplotlib.pyplot as plt
-import seaborn as sns
 import spacy
 import torch
 import torch.optim as optim
@@ -804,6 +802,16 @@ def evaluate_fully(gold_labels, pred_labels, eval_path, _log, _run, result=None)
 
 @ex.capture
 def plot_confusion_matrix(gold_labels, pred_labels, cm_path, _log, _run):
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    except ImportError:
+        # maybe on a machine without display?
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
     all_labels = list(sorted(set(gold_labels + pred_labels)))
     _log.info('Saving the confusion matrix to %s', cm_path)
     cm = confusion_matrix(gold_labels, pred_labels, labels=all_labels)
