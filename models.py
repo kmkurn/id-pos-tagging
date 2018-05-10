@@ -353,19 +353,21 @@ class FeedforwardTagger(nn.Module):
         # apply Bidirectional LSTM
         if self.uses_lstm:
             if mask is None:
-                # shape (batch_size, seq_length)
+                # shape: (batch_size, seq_length)
                 mask = self._get_mask_for(words)   
             
+            # shape: (batch_size)
             seq_lengths = torch.sum(mask.int(), dim=1)
             seq_lengths, sent_perm = seq_lengths.sort(0, descending=True)
+            # shape: (batch_size, seq_length, total_emb_size), sorted by actual seq length
             inputs = inputs[sent_perm]
 
-            packed_input = pack_padded_sequence(inputs, seq_lengths.data.tolist(), batch_first=True)
-
-            lstm_out, _ = self.lstm(packed_input)      
+            packed_input = pack_padded_sequence(inputs, seq_lengths.data.cpu().numpy(), batch_first=True)
+            lstm_out, _ = self.lstm(packed_input)
+            # shape: (batch_size, seq_length, 2 * hidden_unit)
             lstm_out, _ = pad_packed_sequence(lstm_out, batch_first=True)
-
             seq_lengths, original_perm = sent_perm.sort(0, descending=False)
+            # shape: (batch_size, seq_length, 2 * hidden_unit), original order
             inputs = lstm_out[original_perm]
 
         # shape: (batch_size, seq_length, num_tags)
