@@ -7,6 +7,7 @@ import operator
 import os
 import pickle
 import shutil
+import warnings
 
 from pycrfsuite import ItemSequence, Tagger
 from pymongo import MongoClient
@@ -101,8 +102,6 @@ def default_conf():
         resume_from = None
         # words occurring fewer than this value will not be included in the vocab
         min_word_freq = 2
-        # context window size
-        window = 2
         # size of word embedding
         word_embedding_size = 100
         # whether to use prefix features
@@ -123,6 +122,8 @@ def default_conf():
         dropout = 0.5
         # whether to apply a biLSTM layer after embedding
         use_lstm = False
+        # context window size
+        window = 2 if not use_lstm else 0
         # whether to use CRF layer as output layer instead of softmax
         use_crf = False
         # learning rate
@@ -362,6 +363,10 @@ def get_model_metadata(fields, training=True, use_prefix=False, use_suffix=True,
                        suffix_embedding_size=20, window=2, hidden_size=100, dropout=0.5,
                        use_lstm=False, use_crf=False):
     assert len(fields) >= 2, 'fields should have at least 2 elements'
+    if use_lstm and window > 0:
+        warnings.warn(
+            "use_lstm=True but window > 0; it's recommended to set window=0 so the network "
+            "architecture is more 'normal'")
 
     WORDS, TAGS = fields[0][1], fields[1][1]
 

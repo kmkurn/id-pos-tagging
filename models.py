@@ -3,14 +3,14 @@ from contextlib import contextmanager
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple, Union
 import warnings
 
-from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 from torch.autograd import Variable as Var
+from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 from torchcrf import CRF
 import torch
 import torch.nn as nn
-
 import torch.nn.functional as F
 import torch.nn.init as init
+
 
 Word = str
 Tag = str
@@ -166,7 +166,7 @@ class FeedforwardTagger(nn.Module):
     @property
     def window(self) -> int:
         assert isinstance(self.ff[0], nn.Linear)
-        total_features_size = self.lstm.input_size if self.uses_lstm else self.ff[0].in_features
+        total_features_size = self.lstm.input_size if self.lstm is not None else self.ff[0].in_features
         total_features_size -= sum(self.prefix_embedding_size) if self.uses_prefix else 0  # noqa: T484
         total_features_size -= sum(self.suffix_embedding_size) if self.uses_suffix else 0  # noqa: T484
         assert total_features_size % self.word_embedding_size == 0
@@ -210,6 +210,7 @@ class FeedforwardTagger(nn.Module):
                 emb.reset_parameters()
 
         if self.uses_lstm:
+            assert self.lstm is not None
             self.lstm.reset_parameters()
 
         init.xavier_uniform(self.ff[0].weight, gain=init.calculate_gain('tanh'))
@@ -312,7 +313,7 @@ class FeedforwardTagger(nn.Module):
             words = torch.cat((self._get_padding(batch_size), words), 1)  # pad left
             # shape: (batch_size, seq_length + 2*window)
             words = torch.cat((words, self._get_padding(batch_size)), 1)  # pad right
-        
+
         # shape: (batch_size, seq_length + 2*window, word_embedding_size)
         embedded_words = self._embed_words(words)
         # shape: (batch_size, seq_length, total_prefix_embedding_size)
@@ -354,10 +355,11 @@ class FeedforwardTagger(nn.Module):
 
         # apply Bidirectional LSTM
         if self.uses_lstm:
+            assert self.lstm is not None
             if mask is None:
                 # shape: (batch_size, seq_length)
-                mask = self._get_mask_for(words)   
-            
+                mask = self._get_mask_for(words)
+
             # shape: (batch_size)
             seq_lengths = torch.sum(mask.int(), dim=1)
             seq_lengths, sent_perm = seq_lengths.sort(0, descending=True)
