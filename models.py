@@ -321,8 +321,10 @@ class FeedforwardTagger(nn.Module):
         embedded_suffixes = self._embed_suffixes(suffixes)
 
         embedded_words = self.dropout(embedded_words)
-        embedded_prefixes = self.dropout(embedded_prefixes)
-        embedded_suffixes = self.dropout(embedded_suffixes)
+        if self.uses_prefix:
+            embedded_prefixes = self.dropout(embedded_prefixes)
+        if self.uses_suffix:
+            embedded_suffixes = self.dropout(embedded_suffixes)
 
         inputs = embedded_words
         if self.window > 0:
