@@ -93,8 +93,8 @@ class FeedforwardTagger(nn.Module):
             if isinstance(prefix_embedding_size, int):
                 prefix_embedding_size = (prefix_embedding_size, prefix_embedding_size)
             self.prefix_embedding = nn.ModuleList([
-                nn.Embedding(num_prefixes[0], prefix_embedding_size[0], padding_idx=padding_idx),
-                nn.Embedding(num_prefixes[1], prefix_embedding_size[1], padding_idx=padding_idx),
+                nn.Embedding(num, size, padding_idx=padding_idx)
+                for num, size in zip(num_prefixes, prefix_embedding_size)
             ])
             total_features_size += sum(prefix_embedding_size)
 
@@ -102,8 +102,8 @@ class FeedforwardTagger(nn.Module):
             if isinstance(suffix_embedding_size, int):
                 suffix_embedding_size = (suffix_embedding_size, suffix_embedding_size)
             self.suffix_embedding = nn.ModuleList([
-                nn.Embedding(num_suffixes[0], suffix_embedding_size[0], padding_idx=padding_idx),
-                nn.Embedding(num_suffixes[1], suffix_embedding_size[1], padding_idx=padding_idx),
+                nn.Embedding(num, size, padding_idx=padding_idx)
+                for num, size in zip(num_suffixes, suffix_embedding_size)
             ])
             total_features_size += sum(suffix_embedding_size)
 
