@@ -20,6 +20,6 @@ dependencies:
 - pip:
     - flake8-mypy==17.8.0
     - pytorch-crf==0.5.0
-    - sacred==0.7.2
+    - sacred==0.7.3
     - torchtext==0.2.3
     - git+https://github.com/pytorch/tnt.git@464aa4
