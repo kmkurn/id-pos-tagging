@@ -157,6 +157,8 @@ def default_conf():
     eval_path = None
     # where to save the confusion matrix (only evaluate)
     cm_path = None
+    # sentence length cutoff for evaluation (only evaluate)
+    cutoff_len = 50
 
 
 @ex.capture
@@ -165,9 +167,11 @@ def get_model_name_enum(model_name):
 
 
 @ex.capture
-def read_corpus(path, _log, _run, name='train', encoding='utf-8', lower=True, replace_digits=True):
+def read_corpus(path, _log, _run, name='train', encoding='utf-8', lower=True, replace_digits=True,
+                max_sent_len=-1):
     _log.info(f'Reading {name} corpus from %s', path)
-    reader = CorpusReader(path, encoding=encoding, lower=lower, replace_digits=replace_digits)
+    reader = CorpusReader(
+        path, encoding=encoding, lower=lower, replace_digits=replace_digits, max_sent_len=max_sent_len)
     if SACRED_OBSERVE_FILES:
         _run.add_resource(path)
     return reader
@@ -864,20 +868,33 @@ def predict(_log, test_path):
 
 
 @ex.command
-def evaluate(test_path, eval_path=None, cm_path=None):
+def evaluate(test_path, _log, _run, cutoff_len=50, eval_path=None, cm_path=None):
     """Evaluate a trained model."""
     set_random_seed()
-    reader = read_corpus(test_path, name='test')
-    gold_labels = [tag for _, tag in reader.tagged_words()]
-    pred_labels = make_predictions(reader)
-    result = {'overall_f1': f1_score(gold_labels, pred_labels, average='weighted')}
 
-    if eval_path is not None:
-        evaluate_fully(gold_labels, pred_labels, result=result)
-    if cm_path is not None:
-        plot_confusion_matrix(gold_labels, pred_labels)
+    def do_eval(cut=False):
+        kwargs = {'max_sent_len': cutoff_len} if cut else {}
+        reader = read_corpus(test_path, name='test', **kwargs)
+        gold_labels = [tag for _, tag in reader.tagged_words()]
+        pred_labels = make_predictions(reader)
+        f1 = f1_score(gold_labels, pred_labels, average='weighted')
+        if cut:
+            _log.info('f1 (length <= %d): %f', cutoff_len, f1)
+            _run.log_scalar('cutoff_f1(test)', f1)
+        else:
+            _log.info('f1: %f', f1)
+            _run.log_scalar('f1(test)', f1)
+            if eval_path is not None:
+                evaluate_fully(gold_labels, pred_labels, result={'overall_f1': f1})
+            if cm_path is not None:
+                plot_confusion_matrix(gold_labels, pred_labels)
+        return f1
 
-    return result['overall_f1']
+    # Evaluate lenghts less than cutoff
+    do_eval(cut=True)
+
+    # Evaluate all lengths
+    return do_eval()
 
 
 # Commands defined after automain will not be registered. Since `train` needs to call

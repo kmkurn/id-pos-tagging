@@ -16,9 +16,11 @@ class CorpusReader(TaggedCorpusReader):
                  encoding: str = 'utf8',
                  lower: bool = True,
                  replace_digits: bool = True,
+                 max_sent_len: int = -1,
                  ) -> None:
         self.__lower = lower
         self.__replace_digits = replace_digits
+        self.__max_sent_len = max_sent_len
 
         word_tokenizer = RegexpTokenizer(r'\n', gaps=True)
         sent_tokenizer = BlanklineTokenizer()
@@ -43,6 +45,8 @@ class CorpusReader(TaggedCorpusReader):
         for para in super().paras():
             sents = []
             for sent in para:
+                if self.__max_sent_len != -1 and len(sent) > self.__max_sent_len:
+                    continue
                 words = [self._preprocess_word(word) for word in sent]
                 sents.append(words)
             paras.append(sents)
@@ -59,6 +63,8 @@ class CorpusReader(TaggedCorpusReader):
         for tagged_para in super().tagged_paras():
             tagged_sents = []
             for tagged_sent in tagged_para:
+                if self.__max_sent_len != -1 and len(tagged_sent) > self.__max_sent_len:
+                    continue
                 tagged_words = []
                 for word, tag in tagged_sent:
                     tagged_words.append((self._preprocess_word(word), tag))
