@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 
 from collections import Counter
+import copy
 import enum
 import json
 import operator
 import os
 import pickle
 import shutil
-import warnings
 
 from pycrfsuite import ItemSequence, Tagger
 from pymongo import MongoClient
@@ -23,7 +23,7 @@ import torch
 import torch.optim as optim
 import torchnet as tnt
 
-from models import FeedforwardTagger, MemorizationTagger
+from models import MemorizationTagger, make_neural_tagger
 from utils import CorpusReader, SacredAwarePycrfsuiteTrainer as Trainer
 
 ex = Experiment(name='id-pos-tagging')
@@ -44,8 +44,8 @@ class ModelName(enum.Enum):
     MEMO = 'memo'
     # Conditional random field (Pisceldo et al., 2009)
     CRF = 'crf'
-    # Feedforward neural network (Abka, 2016)
-    FF = 'feedforward'
+    # Neural network
+    NN = 'neural'
 
 
 class Comparing(enum.Enum):
@@ -57,7 +57,7 @@ class Comparing(enum.Enum):
 def default_conf():
     # file encoding
     encoding = 'utf8'
-    # model name [majority, crf, feedforward]
+    # model name [majority, crf, neural]
     model_name = ModelName.CRF.value
     # whether to lowercase the words
     lower = True
@@ -355,11 +355,10 @@ MODEL_METADATA_FILENAME = 'model_metadata.json'
 
 @ex.capture
 def save_model_metadata(metadata, save_dir, _log, _run):
-    args, kwargs = metadata
     filename = os.path.join(save_dir, MODEL_METADATA_FILENAME)
     _log.info('Saving model metadata to %s', filename)
     with open(filename, 'w') as f:
-        json.dump({'args': args, 'kwargs': kwargs}, f, sort_keys=True, indent=2)
+        json.dump(metadata, f, sort_keys=True, indent=2)
     if SACRED_OBSERVE_FILES:
         _run.add_artifact(filename)
 
@@ -380,7 +379,7 @@ def get_model_metadata(
         fields,
         training=True,
         use_prefix=False,
-        use_suffix=True,
+        use_suffix=False,
         word_embedding_size=100,
         prefix_embedding_size=20,
         suffix_embedding_size=20,
@@ -390,17 +389,13 @@ def get_model_metadata(
         use_lstm=False,
         use_crf=False):
     assert len(fields) >= 2, 'fields should have at least 2 elements'
-    if use_lstm and window > 0:
-        warnings.warn(
-            "use_lstm=True but window > 0; it's recommended to set window=0 so the network "
-            "architecture is more 'normal'")
 
     WORDS, TAGS = fields[0][1], fields[1][1]
 
     if training:
-        num_words, num_tags = len(WORDS.vocab), len(TAGS.vocab)
-        args = (num_words, num_tags)
-        kwargs = {
+        metadata = {
+            'num_words': len(WORDS.vocab),
+            'num_tags': len(TAGS.vocab),
             'num_prefixes': None,
             'num_suffixes': None,
             'word_embedding_size': word_embedding_size,
@@ -417,29 +412,32 @@ def get_model_metadata(
         if use_prefix:
             assert len(fields) >= 4, 'fields should have at least 4 elements'
             PREFIXES_2, PREFIXES_3 = fields[2][1], fields[3][1]
-            kwargs['num_prefixes'] = (len(PREFIXES_2.vocab), len(PREFIXES_3.vocab))
+            metadata['num_prefixes'] = (len(PREFIXES_2.vocab), len(PREFIXES_3.vocab))
         if use_suffix:
             assert len(fields) >= 4, 'fields should have at least 4 elements'
             SUFFIXES_2, SUFFIXES_3 = fields[-2][1], fields[-1][1]
-            kwargs['num_suffixes'] = (len(SUFFIXES_2.vocab), len(SUFFIXES_3.vocab))
-        return args, kwargs
+            metadata['num_suffixes'] = (len(SUFFIXES_2.vocab), len(SUFFIXES_3.vocab))
+        return metadata
 
     metadata = load_model_metadata()
-    args, kwargs = metadata['args'], metadata['kwargs']
-    kwargs['pretrained_embedding'] = WORDS.vocab.vectors
-    return args, kwargs
+    metadata['pretrained_embedding'] = WORDS.vocab.vectors
+    return metadata
 
 
 @ex.capture
-def make_feedforward_model(fields, _log, training=True, checkpoint=None, device=-1):
-    _log.info('Creating the feedforward model')
-    args, kwargs = get_model_metadata(fields, training=training)
-    model = FeedforwardTagger(*args, **kwargs)
+def make_neural_model(fields, _log, training=True, checkpoint=None, device=-1):
+    _log.info('Creating the neural model')
+    metadata = get_model_metadata(fields, training=training)
+    kwargs = copy.deepcopy(metadata)
+    num_words, num_tags = kwargs.pop('num_words'), kwargs.pop('num_tags')
+    model = make_neural_tagger(num_words, num_tags, **kwargs)
+    setattr(model, 'uses_prefix', metadata.get('num_prefixes') is not None)
+    setattr(model, 'uses_suffix', metadata.get('num_suffixes') is not None)
     _log.info('Model created with %d parameters', sum(p.numel() for p in model.parameters()))
 
     if training:
-        kwargs.pop('pretrained_embedding')  # this is a FloatTensor, can't save it as JSON
-        save_model_metadata((args, kwargs))
+        metadata.pop('pretrained_embedding')  # this is a FloatTensor, can't save it as JSON
+        save_model_metadata(metadata)
 
     if checkpoint is not None:
         _log.info('Restoring model parameters from the checkpoint')
@@ -491,7 +489,7 @@ def load_checkpoint(resume_from, _log, _run, is_best=False):
 
 
 @ex.capture
-def train_feedforward(
+def train_neural(
         train_path,
         save_dir,
         _log,
@@ -546,7 +544,7 @@ def train_feedforward(
 
     # Create model and restore from checkpoint if given
     checkpoint = None if resume_from is None else load_checkpoint()
-    model = make_feedforward_model(fields, checkpoint=checkpoint)
+    model = make_neural_model(fields, checkpoint=checkpoint)
 
     # Create optimizer and learning rate scheduler
     optimizer = make_optimizer(model, checkpoint=checkpoint)
@@ -574,26 +572,23 @@ def train_feedforward(
 
     def net(minibatch):
         # shape: (batch_size, seq_length)
-        words = minibatch.words
-        prefixes, suffixes = None, None
+        temps = [minibatch.words]
         if use_prefix:
             # shape: (batch_size, seq_length)
-            prefs_2, prefs_3 = minibatch.prefs_2, minibatch.prefs_3
-            # shape: (batch_size, seq_length, 2)
-            prefixes = torch.stack((prefs_2, prefs_3), dim=-1)
+            temps.append(minibatch.prefs_2)
+            temps.append(minibatch.prefs_3)
         if use_suffix:
             # shape: (batch_size, seq_length)
-            suffs_2, suffs_3 = minibatch.suffs_2, minibatch.suffs_3
-            # shape: (batch_size, seq_length, 2)
-            suffixes = torch.stack((suffs_2, suffs_3), dim=-1)
-        # shape: (batch_size, seq_length)
-        mask = words != WORDS.vocab.stoi[WORDS.pad_token]
+            temps.append(minibatch.suffs_2)
+            temps.append(minibatch.suffs_3)
+        # shape: (batch_size, seq_length, N)
+        inputs = torch.stack(temps, dim=-1)
         # shape: (batch_size,)
-        loss = model(words, minibatch.tags, prefixes=prefixes, suffixes=suffixes, mask=mask)
+        loss = model(inputs, minibatch.tags)
         # shape: (1,)
         loss = loss.mean()
 
-        return loss, model.decode(words, prefixes=prefixes, suffixes=suffixes, mask=mask)
+        return loss, model.decode(inputs)
 
     def reset_meters():
         loss_meter.reset()
@@ -772,7 +767,7 @@ def predict_crf(reader, model_path, _log, _run):
 
 
 @ex.capture
-def predict_feedforward(reader, save_dir, _log, _run, device=-1, batch_size=16):
+def predict_neural(reader, save_dir, _log, _run, device=-1, batch_size=16):
     fields = load_fields()
     WORDS, TAGS = fields[0][1], fields[1][1]
     # We need IDS field to sort the examples back to its original order because
@@ -781,7 +776,7 @@ def predict_feedforward(reader, save_dir, _log, _run, device=-1, batch_size=16):
     fields.append(('index', IDS))
 
     checkpoint = load_checkpoint(save_dir, is_best=True)
-    model = make_feedforward_model(fields[:-1], training=False, checkpoint=checkpoint)
+    model = make_neural_model(fields[:-1], training=False, checkpoint=checkpoint)
     assert not model.uses_prefix or len(fields) > 3, 'fields should contain prefixes'
     assert not model.uses_suffix or len(fields) > 3, 'fields should contain suffixes'
     assert not model.training
@@ -795,22 +790,19 @@ def predict_feedforward(reader, save_dir, _log, _run, device=-1, batch_size=16):
     indexed_predictions = []
     for minibatch in test_iter:
         # shape: (batch_size, seq_length)
-        words = minibatch.words
-        prefixes, suffixes = None, None
+        temps = [minibatch.words]
         if model.uses_prefix:
             # shape: (batch_size, seq_length)
-            prefs_2, prefs_3 = minibatch.prefs_2, minibatch.prefs_3
-            # shape: (batch_size, seq_length, 2)
-            prefixes = torch.stack((prefs_2, prefs_3), dim=-1)
+            temps.append(minibatch.prefs_2)
+            temps.append(minibatch.prefs_3)
         if model.uses_suffix:
             # shape: (batch_size, seq_length)
-            suffs_2, suffs_3 = minibatch.suffs_2, minibatch.suffs_3
-            # shape: (batch_size, seq_length, 2)
-            suffixes = torch.stack((suffs_2, suffs_3), dim=-1)
+            temps.append(minibatch.suffs_2)
+            temps.append(minibatch.suffs_3)
+        # shape: (batch_size, seq_length, N)
+        inputs = torch.stack(temps, dim=-1)
         # shape: (batch_size, seq_length)
-        mask = words != WORDS.vocab.stoi[WORDS.pad_token]
-        # shape: (batch_size, seq_length)
-        predictions = model.decode(words, prefixes=prefixes, suffixes=suffixes, mask=mask)
+        predictions = model.decode(inputs)
         # shape: (batch_size,)
         index = minibatch.index
 
@@ -830,7 +822,7 @@ def make_predictions(reader):
         return predict_memo(reader)
     if model_name is ModelName.CRF:
         return predict_crf(reader)
-    return predict_feedforward(reader)
+    return predict_neural(reader)
 
 
 @ex.capture
@@ -956,9 +948,9 @@ def train(train_path, _log, _run, dev_path=None):
     elif get_model_name_enum() is ModelName.CRF:
         train_crf()
     else:
-        train_feedforward()
+        train_neural()
 
-    if get_model_name_enum() is not ModelName.FF:
+    if get_model_name_enum() is not ModelName.NN:
         _log.info('Evaluating on train corpus')
         train_f1 = evaluate(train_path)
         _log.info('Result on train corpus: f1 %s', f'{train_f1:.2%}')
