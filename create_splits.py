@@ -49,8 +49,7 @@ if __name__ == '__main__':
         '--dev', type=float, default=0.1, help='proportion of dev set (from train set)')
     parser.add_argument('--num-folds', '-k', type=int, default=5, help='number of folds')
     parser.add_argument(
-        '-o', '--output-directory', dest='outdir', default=os.getcwd(),
-        help='output directory')
+        '-o', '--output-directory', dest='outdir', default=os.getcwd(), help='output directory')
     parser.add_argument('--seed', type=int, default=12345, help='random seed')
     args = parser.parse_args()
     try:

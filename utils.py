@@ -11,13 +11,14 @@ from pycrfsuite import Trainer
 class CorpusReader(TaggedCorpusReader):
     DIGITS = re.compile(r'\d+')
 
-    def __init__(self,
-                 path: str,
-                 encoding: str = 'utf8',
-                 lower: bool = True,
-                 replace_digits: bool = True,
-                 max_sent_len: int = -1,
-                 ) -> None:
+    def __init__(
+            self,
+            path: str,
+            encoding: str = 'utf8',
+            lower: bool = True,
+            replace_digits: bool = True,
+            max_sent_len: int = -1,
+    ) -> None:
         self.__lower = lower
         self.__replace_digits = replace_digits
         self.__max_sent_len = max_sent_len
@@ -29,8 +30,11 @@ class CorpusReader(TaggedCorpusReader):
             return [stream.read()]
 
         super().__init__(
-            *os.path.split(path), sep='\t', word_tokenizer=word_tokenizer,
-            sent_tokenizer=sent_tokenizer, para_block_reader=para_block_reader,
+            *os.path.split(path),
+            sep='\t',
+            word_tokenizer=word_tokenizer,
+            sent_tokenizer=sent_tokenizer,
+            para_block_reader=para_block_reader,
             encoding=encoding)
 
     def _preprocess_word(self, word: str) -> str:

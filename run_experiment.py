@@ -26,7 +26,6 @@ import torchnet as tnt
 from models import FeedforwardTagger, MemorizationTagger
 from utils import CorpusReader, SacredAwarePycrfsuiteTrainer as Trainer
 
-
 ex = Experiment(name='id-pos-tagging')
 
 # Setup Mongo observer
@@ -34,7 +33,6 @@ mongo_url = os.getenv('SACRED_MONGO_URL')
 db_name = os.getenv('SACRED_DB_NAME')
 if mongo_url is not None and db_name is not None:
     ex.observers.append(MongoObserver.create(url=mongo_url, db_name=db_name))
-
 
 SACRED_OBSERVE_FILES = os.getenv('SACRED_OBSERVE_FILES', 'false').lower() == 'true'
 
@@ -167,11 +165,22 @@ def get_model_name_enum(model_name):
 
 
 @ex.capture
-def read_corpus(path, _log, _run, name='train', encoding='utf-8', lower=True, replace_digits=True,
-                max_sent_len=-1):
+def read_corpus(
+        path,
+        _log,
+        _run,
+        name='train',
+        encoding='utf-8',
+        lower=True,
+        replace_digits=True,
+        max_sent_len=-1):
     _log.info(f'Reading {name} corpus from %s', path)
     reader = CorpusReader(
-        path, encoding=encoding, lower=lower, replace_digits=replace_digits, max_sent_len=max_sent_len)
+        path,
+        encoding=encoding,
+        lower=lower,
+        replace_digits=replace_digits,
+        max_sent_len=max_sent_len)
     if SACRED_OBSERVE_FILES:
         _run.add_resource(path)
     return reader
@@ -235,8 +244,8 @@ def make_crf_trainer(_run, min_freq=1, c2=1.0, max_iter=2**31 - 1):
 def train_crf(train_path, model_path, _log, _run, dev_path=None):
     train_reader = read_corpus(train_path)
     _log.info('Extracting features from train corpus')
-    train_itemseq = ItemSequence([
-        fs for sent in train_reader.sents() for fs in extract_crf_features(sent)])
+    train_itemseq = ItemSequence(
+        [fs for sent in train_reader.sents() for fs in extract_crf_features(sent)])
     train_labels = [tag for _, tag in train_reader.tagged_words()]
 
     trainer = make_crf_trainer()
@@ -245,8 +254,8 @@ def train_crf(train_path, model_path, _log, _run, dev_path=None):
     if dev_path is not None:
         dev_reader = read_corpus(dev_path, name='dev')
         _log.info('Extracting features from dev corpus')
-        dev_itemseq = ItemSequence([
-            fs for sent in dev_reader.sents() for fs in extract_crf_features(sent)])
+        dev_itemseq = ItemSequence(
+            [fs for sent in dev_reader.sents() for fs in extract_crf_features(sent)])
         dev_labels = [tag for _, tag in dev_reader.tagged_words()]
         trainer.append(dev_itemseq, dev_labels, group=1)
 
@@ -275,7 +284,8 @@ def load_fields(save_dir, _log, _run):
     _log.info('Loading fields from %s', filename)
     fields = torch.load(filename, map_location='cpu', pickle_module=dill)
     for name, field in fields:
-        assert not field.use_vocab or hasattr(field, 'vocab'), f'no vocab found for field {name}'
+        assert not field.use_vocab or hasattr(
+            field, 'vocab'), f'no vocab found for field {name}'
     if SACRED_OBSERVE_FILES:
         _run.add_resource(filename)
     return fields
@@ -314,8 +324,14 @@ def load_fasttext_embedding(_log):
 
 
 @ex.capture
-def build_vocab(fields, train_dataset, _log, min_word_freq=2, use_fasttext=False,
-                min_prefix_freq=5, min_suffix_freq=5):
+def build_vocab(
+        fields,
+        train_dataset,
+        _log,
+        min_word_freq=2,
+        use_fasttext=False,
+        min_prefix_freq=5,
+        min_suffix_freq=5):
     assert fields, 'fields should not be empty'
 
     _log.info('Building vocabulary')
@@ -360,10 +376,19 @@ def load_model_metadata(save_dir, _log, _run):
 
 
 @ex.capture
-def get_model_metadata(fields, training=True, use_prefix=False, use_suffix=True,
-                       word_embedding_size=100, prefix_embedding_size=20,
-                       suffix_embedding_size=20, window=2, hidden_size=100, dropout=0.5,
-                       use_lstm=False, use_crf=False):
+def get_model_metadata(
+        fields,
+        training=True,
+        use_prefix=False,
+        use_suffix=True,
+        word_embedding_size=100,
+        prefix_embedding_size=20,
+        suffix_embedding_size=20,
+        window=2,
+        hidden_size=100,
+        dropout=0.5,
+        use_lstm=False,
+        use_crf=False):
     assert len(fields) >= 2, 'fields should have at least 2 elements'
     if use_lstm and window > 0:
         warnings.warn(
@@ -466,10 +491,25 @@ def load_checkpoint(resume_from, _log, _run, is_best=False):
 
 
 @ex.capture
-def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_size=16, device=-1,
-                      print_every=10, max_epochs=20, stopping_patience=5, scheduler_patience=2,
-                      tol=0.01, scheduler_verbose=False, resume_from=None, use_prefix=False,
-                      use_suffix=False, overwrite=False, comparing=Comparing.F1.value):
+def train_feedforward(
+        train_path,
+        save_dir,
+        _log,
+        _run,
+        dev_path=None,
+        batch_size=16,
+        device=-1,
+        print_every=10,
+        max_epochs=20,
+        stopping_patience=5,
+        scheduler_patience=2,
+        tol=0.01,
+        scheduler_verbose=False,
+        resume_from=None,
+        use_prefix=False,
+        use_suffix=False,
+        overwrite=False,
+        comparing=Comparing.F1.value):
     _log.info('Creating save directory %s if it does not exist', save_dir)
     os.makedirs(save_dir, exist_ok=overwrite)
 
@@ -511,8 +551,13 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
     # Create optimizer and learning rate scheduler
     optimizer = make_optimizer(model, checkpoint=checkpoint)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=scheduler_patience, threshold=tol,
-        threshold_mode='abs', verbose=scheduler_verbose)
+        optimizer,
+        mode='max',
+        factor=0.5,
+        patience=scheduler_patience,
+        threshold=tol,
+        threshold_mode='abs',
+        verbose=scheduler_verbose)
 
     # Create engine, meters, timers, etc
     engine = tnt.engine.Engine()
@@ -565,7 +610,7 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
             'num_bad_epochs': state['num_bad_epochs'],
             'model': model.state_dict(),
             'optimizer': state['optimizer'].state_dict(),
-        }, is_best=is_best)
+        }, is_best=is_best)  # yapf: disable
 
     def evaluate_on(name):
         assert name in ('train', 'dev')
@@ -574,8 +619,9 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
         engine.test(net, iterator)
         loss = loss_meter.mean
         f1 = f1_score(references, hypotheses, average='weighted')
-        _log.info('** Result on %s (%.2fs): %.2f samples/s | loss %.4f | f1 %s',
-                  name.upper(), epoch_timer.value(), speed_meter.mean, loss, f'{f1:.2%}')
+        _log.info(
+            '** Result on %s (%.2fs): %.2f samples/s | loss %.4f | f1 %s', name.upper(),
+            epoch_timer.value(), speed_meter.mean, loss, f'{f1:.2%}')
         _run.log_scalar(f'loss({name})', loss)
         _run.log_scalar(f'f1({name})', f1)
         # Per tag F1
@@ -641,15 +687,15 @@ def train_feedforward(train_path, save_dir, _log, _run, dev_path=None, batch_siz
             batch_f1 = f1_score(batch_ref, batch_hyp, average='weighted')
             epoch = (state['t'] + 1) / len(state['iterator'])
             _log.info(
-                'Epoch %.2f (%5.2fms): %.2f samples/s | loss %.4f | f1 %s',
-                epoch, 1000 * elapsed_time, batch_speed, batch_loss, f'{batch_f1:.2%}')
+                'Epoch %.2f (%5.2fms): %.2f samples/s | loss %.4f | f1 %s', epoch,
+                1000 * elapsed_time, batch_speed, batch_loss, f'{batch_f1:.2%}')
             _run.log_scalar('batch_loss(train)', batch_loss, step=state['t'])
             _run.log_scalar('batch_f1(train)', batch_f1, step=state['t'])
 
     def on_end_epoch(state):
         _log.info(
-            'Epoch %d done (%.2fs): mean speed %.2f samples/s | mean loss %.4f',
-            state['epoch'], epoch_timer.value(), speed_meter.mean, loss_meter.mean)
+            'Epoch %d done (%.2fs): mean speed %.2f samples/s | mean loss %.4f', state['epoch'],
+            epoch_timer.value(), speed_meter.mean, loss_meter.mean)
         evaluate_on('train')
 
         is_best = False
