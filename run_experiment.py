@@ -550,9 +550,10 @@ def train_feedforward(
 
     # Create optimizer and learning rate scheduler
     optimizer = make_optimizer(model, checkpoint=checkpoint)
+    comp = Comparing(comparing)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        mode='max',
+        mode='max' if comp is Comparing.F1 else 'min',
         factor=0.5,
         patience=scheduler_patience,
         threshold=tol,
@@ -568,7 +569,6 @@ def train_feedforward(
     train_timer = tnt.meter.TimeMeter(None)
     epoch_timer = tnt.meter.TimeMeter(None)
     batch_timer = tnt.meter.TimeMeter(None)
-    comp = Comparing(comparing)
     comp_op = operator.ge if comp is Comparing.F1 else operator.le
     sign = 1 if comp is Comparing.F1 else -1
 
