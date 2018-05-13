@@ -4,6 +4,7 @@ from collections import Counter
 import copy
 import enum
 import json
+import math
 import operator
 import os
 import pickle
@@ -613,9 +614,11 @@ def train_neural(
         loss = loss_meter.mean
         f1 = f1_score(references, hypotheses, average='weighted')
         _log.info(
-            '** Result on %s (%.2fs): %.2f samples/s | loss %.4f | f1 %s', name.upper(),
-            epoch_timer.value(), speed_meter.mean, loss, f'{f1:.2%}')
+            '** Result on %s (%.2fs): %.2f samples/s | loss %.4f | ppl %.4f | f1 %s',
+            name.upper(), epoch_timer.value(), speed_meter.mean, loss, math.exp(loss),
+            f'{f1:.2%}')
         _run.log_scalar(f'loss({name})', loss)
+        _run.log_scalar(f'ppl({name})', math.exp(loss))
         _run.log_scalar(f'f1({name})', f1)
         # Per tag F1
         labels = list(set(references + hypotheses))
@@ -680,15 +683,18 @@ def train_neural(
             batch_f1 = f1_score(batch_ref, batch_hyp, average='weighted')
             epoch = (state['t'] + 1) / len(state['iterator'])
             _log.info(
-                'Epoch %.2f (%5.2fms): %.2f samples/s | loss %.4f | f1 %s', epoch,
-                1000 * elapsed_time, batch_speed, batch_loss, f'{batch_f1:.2%}')
+                'Epoch %.2f (%5.2fms): %.2f samples/s | loss %.4f | ppl %.4f | f1 %s', epoch,
+                1000 * elapsed_time, batch_speed, batch_loss, math.exp(batch_loss),
+                f'{batch_f1:.2%}')
             _run.log_scalar('batch_loss(train)', batch_loss, step=state['t'])
+            _run.log_scalar('batch_ppl(train)', math.exp(batch_loss), step=state['t'])
             _run.log_scalar('batch_f1(train)', batch_f1, step=state['t'])
 
     def on_end_epoch(state):
         _log.info(
-            'Epoch %d done (%.2fs): mean speed %.2f samples/s | mean loss %.4f', state['epoch'],
-            epoch_timer.value(), speed_meter.mean, loss_meter.mean)
+            'Epoch %d done (%.2fs): mean speed %.2f samples/s | mean loss %.4f | mean ppl %.4f',
+            state['epoch'], epoch_timer.value(), speed_meter.mean, loss_meter.mean,
+            math.exp(loss_meter.mean))
         evaluate_on('train')
 
         is_best = False
