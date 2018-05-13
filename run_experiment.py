@@ -583,10 +583,8 @@ def train_neural(
             temps.append(minibatch.suffs_3)
         # shape: (batch_size, seq_length, N)
         inputs = torch.stack(temps, dim=-1)
-        # shape: (batch_size,)
-        loss = model(inputs, minibatch.tags)
         # shape: (1,)
-        loss = loss.mean()
+        loss = model(inputs, minibatch.tags)
 
         return loss, model.decode(inputs)
 

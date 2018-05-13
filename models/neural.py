@@ -181,14 +181,10 @@ class GreedyTagger(nn.Module):
         emissions = emissions.view(-1, emissions.size(-1))
         # shape: (batch_size * seq_length,)
         tags = tags.view(-1)
-        # shape: (batch_size * seq_length,)
-        loss = F.cross_entropy(emissions, tags, reduce=False)
-        # shape: (batch_size, seq_length)
-        loss = loss.view(batch_size, -1)
-        # shape: (batch_size, seq_length)
-        mask = torch.sum((inputs != self.padding_idx).long(), dim=-1) != 0
-        # shape: (batch_size,)
-        return torch.sum(loss * mask.float(), dim=-1)
+        # shape: (1,)
+        loss = F.cross_entropy(emissions, tags, ignore_index=self.padding_idx)
+
+        return loss
 
     def decode(self, inputs: Var) -> List[List[int]]:
         assert inputs.dim() == 3
@@ -237,8 +233,8 @@ class CRFTagger(nn.Module):
         emissions = self.scorer(inputs)
         # shape: (seq_length, batch_size, num_tags)
         emissions = emissions.transpose(0, 1).contiguous()
-        # shape: (batch_size,)
-        loss = -self.crf(emissions, tags, mask=mask, reduce=False)
+        # shape: (1,)
+        loss = -self.crf(emissions, tags, mask=mask) / mask.float().sum()
 
         return loss
 
