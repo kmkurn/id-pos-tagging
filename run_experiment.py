@@ -16,7 +16,7 @@ from sacred import Experiment
 from sacred.observers import MongoObserver
 from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_support
 from spacy.tokens import Doc
-from torchtext.data import BucketIterator, Dataset, Example, Field
+from torchtext.data import BucketIterator, Dataset, Example, Field, NestedField
 from torchtext.vocab import FastText
 import dill
 import spacy
@@ -60,7 +60,7 @@ def default_conf():
     encoding = 'utf8'
     # model name [majority, crf, neural]
     model_name = ModelName.CRF.value
-    # whether to lowercase the words
+    # whether to lowercase words
     lower = True
     # whether to replace digits with zeros
     replace_digits = True
@@ -103,16 +103,30 @@ def default_conf():
         word_embedding_size = 100
         # whether to use prefix features
         use_prefix = False
+        # whether to lowercase prefixes
+        lower_prefixes = True
         # prefixes occurring fewer than this value will not be included in the vocab
         min_prefix_freq = 5
         # size of prefix embedding, can be tuple of 2 elements for 2- and 3-prefix resp.
         prefix_embedding_size = 20
         # whether to use suffix features
         use_suffix = False
+        # whether to lowercase suffixes
+        lower_suffixes = True
         # suffixes occurring fewer than this value will not be included in the vocab
         min_suffix_freq = 5
         # size of suffix embedding, can be tuple of 2 elements for 2- and 3-suffix resp.
         suffix_embedding_size = 20
+        # whether to use character features
+        use_chars = False
+        # whether to lowercase chars
+        lower_chars = False
+        # size of character embedding
+        char_embedding_size = 30
+        # number of char CNN filters
+        num_char_filters = 30
+        # width of each filter
+        filter_width = 3
         # size of hidden layer
         hidden_size = 100
         # dropout rate
@@ -145,6 +159,8 @@ def default_conf():
         scheduler_verbose = False
         # use fasttext pretrained word embedding
         use_fasttext = False
+        # normalize gradient at this threshold
+        grad_norm_threshold = 1.
 
     # path to train corpus (only train)
     train_path = 'train.tsv'
@@ -293,14 +309,17 @@ def load_fields(save_dir, _log, _run):
 
 
 @ex.capture
-def make_dataset(path, fields, _log, name='train', use_prefix=False, use_suffix=False):
-    assert len(fields) in range(2, 8), 'fields should have between 2 and 7 elements'
+def make_dataset(
+        path, fields, _log, name='train', use_prefix=False, use_suffix=False, use_chars=False):
+    assert len(fields) in range(2, 9), 'fields should have between 2 and 8 elements'
 
     _log.info('Creating %s dataset', name)
-    reader = read_corpus(path, name=name) if isinstance(path, str) else path
+    # lower=False because words will be lowercased by the WORDS field
+    reader = read_corpus(path, name=name, lower=False) if isinstance(path, str) else path
     examples = []
     for id_, tagged_sent in enumerate(reader.tagged_sents()):
         words, tags = zip(*tagged_sent)
+        words, tags = list(words), list(tags)  # torchtext requires sequential fields in a list
         data = [words, tags]
         if use_prefix:
             prefs_2 = [w[:2] for w in words]
@@ -310,7 +329,9 @@ def make_dataset(path, fields, _log, name='train', use_prefix=False, use_suffix=
             suffs_2 = [w[-2:] for w in words]
             suffs_3 = [w[-3:] for w in words]
             data.extend([suffs_2, suffs_3])
-        if len(fields) in (3, 5, 7):
+        if use_chars:
+            data.append(words)  # will be tokenized into chars by the CHARS field
+        if fields[-1][0] == 'index':
             data.append(id_)
         examples.append(Example.fromlist(data, fields))
     return Dataset(examples, fields)
@@ -381,17 +402,20 @@ def get_model_metadata(
         training=True,
         use_prefix=False,
         use_suffix=False,
+        use_chars=False,
         word_embedding_size=100,
         prefix_embedding_size=20,
         suffix_embedding_size=20,
+        char_embedding_size=30,
+        num_char_filters=100,
+        filter_width=3,
         window=2,
         hidden_size=100,
         dropout=0.5,
         use_lstm=False,
         use_crf=False):
-    assert len(fields) >= 2, 'fields should have at least 2 elements'
-
-    WORDS, TAGS = fields[0][1], fields[1][1]
+    field_dict = dict(fields)
+    WORDS, TAGS = field_dict['words'], field_dict['tags']
 
     if training:
         metadata = {
@@ -399,9 +423,13 @@ def get_model_metadata(
             'num_tags': len(TAGS.vocab),
             'num_prefixes': None,
             'num_suffixes': None,
+            'num_chars': None,
             'word_embedding_size': word_embedding_size,
             'prefix_embedding_size': prefix_embedding_size,
             'suffix_embedding_size': suffix_embedding_size,
+            'char_embedding_size': char_embedding_size,
+            'num_char_filters': num_char_filters,
+            'filter_width': filter_width,
             'window': window,
             'hidden_size': hidden_size,
             'dropout': dropout,
@@ -411,13 +439,14 @@ def get_model_metadata(
             'pretrained_embedding': WORDS.vocab.vectors,
         }
         if use_prefix:
-            assert len(fields) >= 4, 'fields should have at least 4 elements'
-            PREFIXES_2, PREFIXES_3 = fields[2][1], fields[3][1]
+            PREFIXES_2, PREFIXES_3 = field_dict['prefs_2'], field_dict['prefs_3']
             metadata['num_prefixes'] = (len(PREFIXES_2.vocab), len(PREFIXES_3.vocab))
         if use_suffix:
-            assert len(fields) >= 4, 'fields should have at least 4 elements'
-            SUFFIXES_2, SUFFIXES_3 = fields[-2][1], fields[-1][1]
+            SUFFIXES_2, SUFFIXES_3 = field_dict['suffs_2'], field_dict['suffs_3']
             metadata['num_suffixes'] = (len(SUFFIXES_2.vocab), len(SUFFIXES_3.vocab))
+        if use_chars:
+            CHARS = field_dict['chars']
+            metadata['num_chars'] = len(CHARS.vocab)
         return metadata
 
     metadata = load_model_metadata()
@@ -434,6 +463,7 @@ def make_neural_model(fields, _log, training=True, checkpoint=None, device=-1):
     model = make_neural_tagger(num_words, num_tags, **kwargs)
     setattr(model, 'uses_prefix', metadata.get('num_prefixes') is not None)
     setattr(model, 'uses_suffix', metadata.get('num_suffixes') is not None)
+    setattr(model, 'uses_chars', metadata.get('num_chars') is not None)
     _log.info('Model created with %d parameters', sum(p.numel() for p in model.parameters()))
 
     if training:
@@ -452,12 +482,19 @@ def make_neural_model(fields, _log, training=True, checkpoint=None, device=-1):
 
 
 @ex.capture
-def make_optimizer(model, _log, checkpoint=None, lr=0.001):
+def make_optimizer(model, _log, checkpoint=None, lr=0.001, device=-1):
     _log.info('Creating the optimizer')
     optimizer = optim.Adam((p for p in model.parameters() if p.requires_grad), lr=lr)
     if checkpoint is not None:
         _log.info('Restoring optimizer parameters from the checkpoint')
         optimizer.load_state_dict(checkpoint['optimizer'])
+    if device >= 0:
+        # move optimizer states to CUDA if necessary
+        # see https://github.com/pytorch/pytorch/issues/2830
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.cuda(device)
     return optimizer
 
 
@@ -507,23 +544,38 @@ def train_neural(
         resume_from=None,
         use_prefix=False,
         use_suffix=False,
+        use_chars=False,
+        lower=True,
+        lower_prefixes=True,
+        lower_suffixes=True,
+        lower_chars=False,
         overwrite=False,
-        comparing=Comparing.F1.value):
+        comparing=Comparing.F1.value,
+        grad_norm_threshold=1.):
     _log.info('Creating save directory %s if it does not exist', save_dir)
     os.makedirs(save_dir, exist_ok=overwrite)
 
     # Create fields
-    WORDS = Field(batch_first=True)
+    WORDS = Field(batch_first=True, lower=lower)
     TAGS = Field(batch_first=True)  # dataset is small so at test time tags might be unk
     fields = [('words', WORDS), ('tags', TAGS)]
     if use_prefix:
-        PREFIXES_2 = Field(batch_first=True)
-        PREFIXES_3 = Field(batch_first=True)
+        PREFIXES_2 = Field(batch_first=True, lower=lower_prefixes)
+        PREFIXES_3 = Field(batch_first=True, lower=lower_prefixes)
         fields.extend([('prefs_2', PREFIXES_2), ('prefs_3', PREFIXES_3)])
     if use_suffix:
-        SUFFIXES_2 = Field(batch_first=True)
-        SUFFIXES_3 = Field(batch_first=True)
+        SUFFIXES_2 = Field(batch_first=True, lower=lower_suffixes)
+        SUFFIXES_3 = Field(batch_first=True, lower=lower_suffixes)
         fields.extend([('suffs_2', SUFFIXES_2), ('suffs_3', SUFFIXES_3)])
+    if use_chars:
+        CHARS = NestedField(
+            Field(
+                batch_first=True,
+                lower=lower_chars,
+                pad_token='<cpad>',
+                unk_token='<cunk>',
+                tokenize=list))
+        fields.append(('chars', CHARS))
 
     # Create datasets and iterators
     train_dataset = make_dataset(train_path, fields)
@@ -573,17 +625,18 @@ def train_neural(
 
     def net(minibatch):
         # shape: (batch_size, seq_length)
-        temps = [minibatch.words]
+        inputs = [minibatch.words]
         if use_prefix:
             # shape: (batch_size, seq_length)
-            temps.append(minibatch.prefs_2)
-            temps.append(minibatch.prefs_3)
+            inputs.append(minibatch.prefs_2)
+            inputs.append(minibatch.prefs_3)
         if use_suffix:
             # shape: (batch_size, seq_length)
-            temps.append(minibatch.suffs_2)
-            temps.append(minibatch.suffs_3)
-        # shape: (batch_size, seq_length, N)
-        inputs = torch.stack(temps, dim=-1)
+            inputs.append(minibatch.suffs_2)
+            inputs.append(minibatch.suffs_3)
+        if use_chars:
+            # shape: (batch_size, seq_length, num_chars)
+            inputs.append(minibatch.chars)
         # shape: (1,)
         loss = model(inputs, minibatch.tags)
 
@@ -660,6 +713,9 @@ def train_neural(
         batch_timer.reset()
 
     def on_forward(state):
+        if state['train']:
+            torch.nn.utils.clip_grad_norm((p for p in model.parameters() if p.requires_grad),
+                                          grad_norm_threshold)
         batch_loss = state['loss'].data[0]
         loss_meter.add(batch_loss)
         # shape: (batch_size, seq_length)
@@ -773,7 +829,8 @@ def predict_crf(reader, model_path, _log, _run):
 @ex.capture
 def predict_neural(reader, save_dir, _log, _run, device=-1, batch_size=16):
     fields = load_fields()
-    WORDS, TAGS = fields[0][1], fields[1][1]
+    field_dict = dict(fields)
+    WORDS, TAGS = field_dict['words'], field_dict['tags']
     # We need IDS field to sort the examples back to its original order because
     # the iterator will sort them according to length to minimize padding
     IDS = Field(sequential=False, use_vocab=False)
@@ -783,10 +840,16 @@ def predict_neural(reader, save_dir, _log, _run, device=-1, batch_size=16):
     model = make_neural_model(fields[:-1], training=False, checkpoint=checkpoint)
     assert not model.uses_prefix or len(fields) > 3, 'fields should contain prefixes'
     assert not model.uses_suffix or len(fields) > 3, 'fields should contain suffixes'
+    assert not model.uses_chars or len(fields) > 3, 'fields should contain chars'
     assert not model.training
 
     test_dataset = make_dataset(
-        reader, fields, name='test', use_prefix=model.uses_prefix, use_suffix=model.uses_suffix)
+        reader,
+        fields,
+        name='test',
+        use_prefix=model.uses_prefix,
+        use_suffix=model.uses_suffix,
+        use_chars=model.uses_chars)
     sort_key = lambda ex: len(ex.words)  # noqa: E731
     test_iter = BucketIterator(
         test_dataset, batch_size, sort_key=sort_key, device=device, train=False)
@@ -794,17 +857,18 @@ def predict_neural(reader, save_dir, _log, _run, device=-1, batch_size=16):
     indexed_predictions = []
     for minibatch in test_iter:
         # shape: (batch_size, seq_length)
-        temps = [minibatch.words]
+        inputs = [minibatch.words]
         if model.uses_prefix:
             # shape: (batch_size, seq_length)
-            temps.append(minibatch.prefs_2)
-            temps.append(minibatch.prefs_3)
+            inputs.append(minibatch.prefs_2)
+            inputs.append(minibatch.prefs_3)
         if model.uses_suffix:
             # shape: (batch_size, seq_length)
-            temps.append(minibatch.suffs_2)
-            temps.append(minibatch.suffs_3)
-        # shape: (batch_size, seq_length, N)
-        inputs = torch.stack(temps, dim=-1)
+            inputs.append(minibatch.suffs_2)
+            inputs.append(minibatch.suffs_3)
+        if model.uses_chars:
+            # shape: (batch_size, seq_length, num_chars)
+            inputs.append(minibatch.chars)
         # shape: (batch_size, seq_length)
         predictions = model.decode(inputs)
         # shape: (batch_size,)
@@ -916,7 +980,9 @@ def evaluate(test_path, _log, _run, cutoff_len=50, eval_path=None, cm_path=None)
 
     def do_eval(cut=False):
         kwargs = {'max_sent_len': cutoff_len} if cut else {}
-        reader = read_corpus(test_path, name='test', **kwargs)
+        model_name = get_model_name_enum()
+        reader = read_corpus(
+            test_path, name='test', lower=model_name is not ModelName.NN, **kwargs)
         gold_labels = [tag for _, tag in reader.tagged_words()]
         pred_labels = make_predictions(reader)
         f1 = f1_score(gold_labels, pred_labels, average='weighted')

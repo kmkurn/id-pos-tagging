@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from typing import List
+from typing import List, Sequence
 
 from torch.autograd import Variable as Var
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
@@ -60,14 +60,70 @@ class ContextWindow(nn.Module):
 class Concatenate(nn.Module):
     def __init__(self, modules: nn.ModuleList) -> None:
         super(Concatenate, self).__init__()
-        self.__modules = modules
+        self.__modules = modules  # use name-mangling because nn.Module already has modules attribute
+
+    def forward(self, inputs: Sequence[Var]) -> Var:
+        assert len(inputs) == len(self.__modules)
+
+        res = [m(i) for m, i in zip(self.__modules, inputs)]
+        outputs = torch.cat(res, dim=-1)
+
+        return outputs
+
+
+class TimeDistributed(nn.Module):
+    def __init__(self, module: nn.Module) -> None:
+        super(TimeDistributed, self).__init__()
+        self.module = module
+
+    def reset_parameters(self) -> None:
+        if hasattr(self.module, 'reset_parameters'):
+            self.module.reset_parameters()
 
     def forward(self, inputs: Var) -> Var:
-        assert inputs.size(-1) == len(self.__modules)
+        assert inputs.dim() > 2
 
-        res = [m(inputs[..., i]) for i, m in enumerate(self.__modules)]
-        # shape: (*, size)
-        outputs = torch.cat(res, dim=-1)
+        b, t = inputs.size(0), inputs.size(1)
+
+        # shape: (b * t, *r)
+        inputs = inputs.view(-1, *inputs.size()[2:])
+        # shape: (b * t, *r')
+        outputs = self.module(inputs)
+        assert outputs.size(0) == b * t
+        # shape: (b, t, *r')
+        outputs = outputs.view(b, t, *outputs.size()[1:])
+
+        return outputs
+
+
+class CNNEncoder(nn.Module):
+    def __init__(
+            self,
+            input_size: int,
+            num_filters: int = 100,
+            filter_width: int = 3,
+    ) -> None:
+        super(CNNEncoder, self).__init__()
+        self.input_size = input_size
+        padding = (filter_width - 1, 0)
+        self.conv = nn.Conv2d(1, num_filters, (filter_width, input_size), padding=padding)
+
+    def reset_parameters(self) -> None:
+        self.conv.reset_parameters()
+
+    def forward(self, inputs: Var) -> Var:
+        assert inputs.dim() == 3
+        assert inputs.size(-1) == self.input_size
+
+        # shape: (batch_size, 1, seq_length, input_size)
+        inputs = inputs.unsqueeze(1)
+        # shape: (batch_size, num_filters, seq_length, 1)
+        convolved = self.conv(inputs)
+        assert convolved.size(-1) == 1
+        # shape: (batch_size, num_filters, seq_length)
+        convolved = convolved.squeeze(-1)
+        # shape: (batch_size, num_filters)
+        outputs, _ = convolved.max(dim=-1)
 
         return outputs
 
@@ -92,13 +148,15 @@ class BiLSTMEmbedder(nn.Module):
             self.embedder.reset_parameters()
         self.lstm.reset_parameters()
 
-    def forward(self, inputs: Var) -> Var:
-        assert inputs.dim() == 3
+    def forward(self, inputs: Sequence[Var]) -> Var:
+        assert all(i.dim() in (2, 3) for i in inputs)
 
         # shape: (batch_size, seq_length, embedder_size)
         embedded = self.embedder(inputs)
+        # shape: (batch_size, seq_length, N)
+        cat = torch.cat([i.unsqueeze(-1) if i.dim() == 2 else i for i in inputs], dim=-1)
         # shape: (batch_size, seq_length)
-        mask = torch.sum((inputs != self.padding_idx).long(), dim=-1) != 0
+        mask = torch.sum((cat != self.padding_idx).long(), dim=-1) != 0
         # shape: (batch_size,)
         seq_lengths = torch.sum(mask.long(), dim=1)
         seq_lengths, sent_perm = seq_lengths.sort(0, descending=True)
@@ -148,8 +206,8 @@ class EmissionScorer(nn.Module):
         init.xavier_uniform(self.ff[-1].weight, gain=init.calculate_gain('linear'))
         init.constant(self.ff[-1].bias, 0.)
 
-    def forward(self, inputs: Var) -> Var:
-        assert inputs.dim() >= 2
+    def forward(self, inputs: Sequence[Var]) -> Var:
+        assert all(i.dim() >= 2 for i in inputs)
 
         # shape: (batch_size, seq_length, size)
         embedded = self.embedder(inputs)
@@ -169,9 +227,9 @@ class GreedyTagger(nn.Module):
     def reset_parameters(self) -> None:
         self.scorer.reset_parameters()
 
-    def forward(self, inputs: Var, tags: Var) -> Var:
-        assert inputs.dim() == 3
-        assert inputs.size()[:2] == tags.size()
+    def forward(self, inputs: Sequence[Var], tags: Var) -> Var:
+        assert all(i.dim() in (2, 3) for i in inputs)
+        assert all(i.size()[:2] == tags.size() for i in inputs)
 
         batch_size = tags.size(0)
 
@@ -186,8 +244,8 @@ class GreedyTagger(nn.Module):
 
         return loss
 
-    def decode(self, inputs: Var) -> List[List[int]]:
-        assert inputs.dim() == 3
+    def decode(self, inputs: Sequence[Var]) -> List[List[int]]:
+        assert all(i.dim() in (2, 3) for i in inputs)
 
         with evaluation(self):
             # shape: (batch_size, seq_length, num_tags)
@@ -195,8 +253,10 @@ class GreedyTagger(nn.Module):
 
         # shape: (batch_size, seq_length)
         _, best_tags = emissions.max(dim=-1)
+        # shape: (batch_size, seq_length, N)
+        cat = torch.cat([i.unsqueeze(-1) if i.dim() == 2 else i for i in inputs], dim=-1)
         # shape: (batch_size, seq_length)
-        mask = torch.sum((inputs != self.padding_idx).long(), dim=-1) != 0
+        mask = torch.sum((cat != self.padding_idx).long(), dim=-1) != 0
 
         best_tags, mask = best_tags.data, mask.data
         result = []
@@ -218,14 +278,16 @@ class CRFTagger(nn.Module):
         self.scorer.reset_parameters()
         self.crf.reset_parameters()
 
-    def forward(self, inputs: Var, tags: Var) -> Var:
-        assert inputs.dim() == 3
-        assert inputs.size()[:2] == tags.size()
+    def forward(self, inputs: Sequence[Var], tags: Var) -> Var:
+        assert all(i.dim() in (2, 3) for i in inputs)
+        assert all(i.size()[:2] == tags.size() for i in inputs)
 
         # shape: (seq_length, batch_size)
         tags = tags.transpose(0, 1).contiguous()
+        # shape: (batch_size, seq_length, N)
+        cat = torch.cat([i.unsqueeze(-1) if i.dim() == 2 else i for i in inputs], dim=-1)
         # shape: (batch_size, seq_length)
-        mask = torch.sum((inputs != self.padding_idx).long(), dim=-1) != 0
+        mask = torch.sum((cat != self.padding_idx).long(), dim=-1) != 0
         # shape: (seq_length, batch_size)
         mask = mask.transpose(0, 1).contiguous()
 
@@ -238,11 +300,13 @@ class CRFTagger(nn.Module):
 
         return loss
 
-    def decode(self, inputs: Var) -> List[List[int]]:
-        assert inputs.dim() == 3
+    def decode(self, inputs: Sequence[Var]) -> List[List[int]]:
+        assert all(i.dim() in (2, 3) for i in inputs)
 
+        # shape: (batch_size, seq_length, N)
+        cat = torch.cat([i.unsqueeze(-1) if i.dim() == 2 else i for i in inputs], dim=-1)
         # shape: (batch_size, seq_length)
-        mask = torch.sum((inputs != self.padding_idx).long(), dim=-1) != 0
+        mask = torch.sum((cat != self.padding_idx).long(), dim=-1) != 0
         # shape: (seq_length, batch_size)
         mask = mask.transpose(0, 1).contiguous()
 

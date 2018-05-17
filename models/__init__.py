@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 
 from embedding import Embedding, EmbeddingWithPretrained
-from models.neural import BiLSTMEmbedder, CRFTagger, Concatenate, ContextWindow, \
-    EmissionScorer, GreedyTagger
+from models.neural import BiLSTMEmbedder, CNNEncoder, CRFTagger, Concatenate, ContextWindow, \
+    EmissionScorer, GreedyTagger, TimeDistributed
 
 Word = str
 Tag = str
@@ -65,9 +65,13 @@ def make_neural_tagger(
         num_tags: int,
         num_prefixes: Optional[Sequence[int]] = None,
         num_suffixes: Optional[Sequence[int]] = None,
+        num_chars: Optional[int] = None,
         word_embedding_size: int = 100,
         prefix_embedding_size: Union[Sequence[int], int] = 20,
         suffix_embedding_size: Union[Sequence[int], int] = 20,
+        char_embedding_size: int = 50,
+        num_char_filters: int = 100,
+        filter_width: int = 3,
         window: int = 2,
         hidden_size: int = 100,
         dropout: float = 0.5,
@@ -119,8 +123,23 @@ def make_neural_tagger(
     if num_suffixes is not None:
         embed_affixes(num_suffixes, suffix_embedding_size)
 
+    # Char features
+    if num_chars is not None:
+        char_emb = TimeDistributed(
+            nn.Sequential(
+                Embedding(
+                    num_chars, char_embedding_size, padding_idx=padding_idx, dropout=dropout),
+                CNNEncoder(
+                    char_embedding_size,
+                    num_filters=num_char_filters,
+                    filter_width=filter_width),
+            ))
+        embs.append(char_emb)
+        emb_sz += num_char_filters
+
     final_emb = Concatenate(nn.ModuleList(embs))
     if use_lstm:
+        final_emb = nn.Sequential(final_emb, nn.Dropout(dropout))
         final_emb = BiLSTMEmbedder(final_emb, emb_sz, hidden_size, padding_idx=padding_idx)
         emb_sz = 2 * hidden_size
     scorer = EmissionScorer(

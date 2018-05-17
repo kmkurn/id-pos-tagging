@@ -17,6 +17,11 @@ class Embedding(nn.Embedding):
         super(Embedding, self).__init__(num_embeddings, embedding_dim, padding_idx=padding_idx)
         self.dropout = nn.Dropout(dropout)
 
+    def __repr__(self) -> str:
+        return (
+            f'{self.__class__.__name__}({self.num_embeddings}, {self.embedding_dim}, '
+            f'padding_idx={self.padding_idx}, dropout={self.dropout.p})')
+
     def forward(self, inputs: Var) -> Var:
         return self.dropout(super(Embedding, self).forward(inputs))
 
@@ -46,6 +51,11 @@ class EmbeddingWithPretrained(Embedding):
             )
 
         self.reset_parameters()
+
+    def __repr__(self) -> str:
+        return (
+            f'{self.__class__.__name__}({self.num_embeddings}, {self.embedding_dim}, '
+            f'padding_idx={self.padding_idx}, dropout={self.dropout.p})')
 
     def reset_parameters(self) -> None:
         super(EmbeddingWithPretrained, self).reset_parameters()
