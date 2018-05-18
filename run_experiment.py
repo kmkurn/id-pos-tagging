@@ -556,16 +556,21 @@ def train_neural(
     os.makedirs(save_dir, exist_ok=overwrite)
 
     # Create fields
-    WORDS = Field(batch_first=True, lower=lower)
-    TAGS = Field(batch_first=True)  # dataset is small so at test time tags might be unk
+    WORDS = Field(batch_first=True, lower=lower, init_token='<s>', eos_token='</s>')
+    # dataset is small so at test time tags might be unk
+    TAGS = Field(batch_first=True, init_token='<s>', eos_token='</s>')
     fields = [('words', WORDS), ('tags', TAGS)]
     if use_prefix:
-        PREFIXES_2 = Field(batch_first=True, lower=lower_prefixes)
-        PREFIXES_3 = Field(batch_first=True, lower=lower_prefixes)
+        PREFIXES_2 = Field(
+            batch_first=True, lower=lower_prefixes, init_token='<s>', eos_token='</s>')
+        PREFIXES_3 = Field(
+            batch_first=True, lower=lower_prefixes, init_token='<s>', eos_token='</s>')
         fields.extend([('prefs_2', PREFIXES_2), ('prefs_3', PREFIXES_3)])
     if use_suffix:
-        SUFFIXES_2 = Field(batch_first=True, lower=lower_suffixes)
-        SUFFIXES_3 = Field(batch_first=True, lower=lower_suffixes)
+        SUFFIXES_2 = Field(
+            batch_first=True, lower=lower_suffixes, init_token='<s>', eos_token='</s>')
+        SUFFIXES_3 = Field(
+            batch_first=True, lower=lower_suffixes, init_token='<s>', eos_token='</s>')
         fields.extend([('suffs_2', SUFFIXES_2), ('suffs_3', SUFFIXES_3)])
     if use_chars:
         CHARS = NestedField(
@@ -574,7 +579,11 @@ def train_neural(
                 lower=lower_chars,
                 pad_token='<cpad>',
                 unk_token='<cunk>',
-                tokenize=list))
+                tokenize=list,
+                init_token='<w>',
+                eos_token='</w>'),
+            init_token='<s>',
+            eos_token='</s>')
         fields.append(('chars', CHARS))
 
     # Create datasets and iterators
@@ -727,14 +736,20 @@ def train_neural(
 
         if not state['train']:
             for gold, pred in zip(golds, state['output']):
-                gold = gold[:len(pred)]
-                references.extend(gold.data)
+                gold = gold.data[:len(pred)]
+                assert gold[0] == WORDS.vocab.stoi[WORDS.init_token]
+                assert gold[-1] == WORDS.vocab.stoi[WORDS.eos_token]
+                gold, pred = gold[1:-1], pred[1:-1]  # strip init and eos tokens
+                references.extend(gold)
                 hypotheses.extend(pred)
         elif (state['t'] + 1) % print_every == 0:
             batch_ref, batch_hyp = [], []
             for gold, pred in zip(golds, state['output']):
-                gold = gold[:len(pred)]
-                batch_ref.extend(gold.data)
+                gold = gold.data[:len(pred)]
+                assert gold[0] == WORDS.vocab.stoi[WORDS.init_token]
+                assert gold[-1] == WORDS.vocab.stoi[WORDS.eos_token]
+                gold, pred = gold[1:-1], pred[1:-1]  # strip init and eos tokens
+                batch_ref.extend(gold)
                 batch_hyp.extend(pred)
             batch_f1 = f1_score(batch_ref, batch_hyp, average='weighted')
             epoch = (state['t'] + 1) / len(state['iterator'])
@@ -856,6 +871,8 @@ def predict_neural(reader, save_dir, _log, _run, device=-1, batch_size=16):
 
     indexed_predictions = []
     for minibatch in test_iter:
+        # shape: (batch_size,)
+        index = minibatch.index
         # shape: (batch_size, seq_length)
         inputs = [minibatch.words]
         if model.uses_prefix:
@@ -869,12 +886,13 @@ def predict_neural(reader, save_dir, _log, _run, device=-1, batch_size=16):
         if model.uses_chars:
             # shape: (batch_size, seq_length, num_chars)
             inputs.append(minibatch.chars)
-        # shape: (batch_size, seq_length)
-        predictions = model.decode(inputs)
-        # shape: (batch_size,)
-        index = minibatch.index
 
-        for i, pred in zip(index, predictions):
+        predictions = model.decode(inputs)
+        for i, gold, pred in zip(index, minibatch.tags, predictions):
+            gold = gold.data[:len(pred)]
+            assert gold[0] == WORDS.vocab.stoi[WORDS.init_token]
+            assert gold[-1] == WORDS.vocab.stoi[WORDS.eos_token]
+            pred = pred[1:-1]  # strip init and eos tokens
             indexed_predictions.append((i.data[0], pred))
 
     indexed_predictions.sort()
