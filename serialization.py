@@ -2,7 +2,7 @@ import typing
 
 from camel import PYTHON_TYPES, Camel, CamelRegistry
 
-from models import MemorizationTagger
+from models.tagger import MemorizationTagger
 
 registry = CamelRegistry()
 

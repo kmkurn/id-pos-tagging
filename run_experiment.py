@@ -23,7 +23,7 @@ import torch
 import torch.optim as optim
 import torchnet as tnt
 
-from models import MemorizationTagger, make_neural_tagger
+from models.tagger import MemorizationTagger, make_neural_tagger
 from serialization import dump, load
 from utils import CorpusReader, SacredAwarePycrfsuiteTrainer as Trainer
 
