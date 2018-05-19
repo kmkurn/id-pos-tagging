@@ -45,7 +45,9 @@ class EmbeddingWithPretrained(Embedding):
             self.pretrained_embedding.weight.data = pretrained_embedding
             self.pretrained_embedding.weight.requires_grad = False  # prevent update when training
             self.embedding_projection = nn.Sequential(
-                nn.Linear(embedding_dim + sz, embedding_dim),
+                # bias HAS to be false here because if not, then padding can get nonzero
+                # embedding
+                nn.Linear(embedding_dim + sz, embedding_dim, bias=False),
                 nn.Tanh(),
                 nn.Dropout(dropout),
             )
@@ -62,7 +64,6 @@ class EmbeddingWithPretrained(Embedding):
         if self.pretrained_embedding is not None:
             init.xavier_uniform(
                 self.embedding_projection[0].weight, gain=init.calculate_gain('tanh'))
-            init.constant(self.embedding_projection[0].bias, 0.)
 
     def forward(self, inputs: Var) -> Var:
         # inputs shape: (batch_size, seq_length)

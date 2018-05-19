@@ -2,29 +2,28 @@ from typing import List, Tuple
 import itertools
 import os
 import re
+import sys
 
 from nltk.corpus.reader import TaggedCorpusReader
 from nltk.tokenize import BlanklineTokenizer, RegexpTokenizer
 from pycrfsuite import Trainer
+from sacred.observers import MongoObserver
+
+SACRED_OBSERVE_FILES = os.getenv('SACRED_OBSERVE_FILES', 'false').lower() == 'true'
 
 
 class CorpusReader(TaggedCorpusReader):
     DIGITS = re.compile(r'\d+')
+    WORD_TOK = RegexpTokenizer(r'\n', gaps=True)
+    SENT_TOK = BlanklineTokenizer()
 
     def __init__(
             self,
             path: str,
             encoding: str = 'utf8',
-            lower: bool = True,
-            replace_digits: bool = True,
             max_sent_len: int = -1,
     ) -> None:
-        self.__lower = lower
-        self.__replace_digits = replace_digits
         self.__max_sent_len = max_sent_len
-
-        word_tokenizer = RegexpTokenizer(r'\n', gaps=True)
-        sent_tokenizer = BlanklineTokenizer()
 
         def para_block_reader(stream):
             return [stream.read()]
@@ -32,17 +31,10 @@ class CorpusReader(TaggedCorpusReader):
         super().__init__(
             *os.path.split(path),
             sep='\t',
-            word_tokenizer=word_tokenizer,
-            sent_tokenizer=sent_tokenizer,
+            word_tokenizer=self.WORD_TOK,
+            sent_tokenizer=self.SENT_TOK,
             para_block_reader=para_block_reader,
             encoding=encoding)
-
-    def _preprocess_word(self, word: str) -> str:
-        if self.__lower:
-            word = word.lower()
-        if self.__replace_digits:
-            word = self.DIGITS.sub('0', word)
-        return word
 
     def paras(self) -> List[List[List[str]]]:
         paras = []
@@ -51,8 +43,7 @@ class CorpusReader(TaggedCorpusReader):
             for sent in para:
                 if self.__max_sent_len != -1 and len(sent) > self.__max_sent_len:
                     continue
-                words = [self._preprocess_word(word) for word in sent]
-                sents.append(words)
+                sents.append(sent)
             paras.append(sents)
         return paras
 
@@ -69,10 +60,7 @@ class CorpusReader(TaggedCorpusReader):
             for tagged_sent in tagged_para:
                 if self.__max_sent_len != -1 and len(tagged_sent) > self.__max_sent_len:
                     continue
-                tagged_words = []
-                for word, tag in tagged_sent:
-                    tagged_words.append((self._preprocess_word(word), tag))
-                tagged_sents.append(tagged_words)
+                tagged_sents.append(tagged_sent)
             tagged_paras.append(tagged_sents)
         return tagged_paras
 
@@ -81,6 +69,11 @@ class CorpusReader(TaggedCorpusReader):
 
     def tagged_words(self) -> List[Tuple[str, str]]:
         return list(itertools.chain.from_iterable(self.tagged_sents()))
+
+    @classmethod
+    def to_sents(cls, text: str) -> List[List[str]]:
+        return [[word for word in cls.WORD_TOK.tokenize(sent)]
+                for sent in cls.SENT_TOK.tokenize(text)]  # yapf: disable
 
 
 class SacredAwarePycrfsuiteTrainer(Trainer):
@@ -99,3 +92,33 @@ class SacredAwarePycrfsuiteTrainer(Trainer):
             for label, score in info['scores'].items():
                 self.__run.log_scalar(f'{metric}(dev, {label})', getattr(score, metric))
         super().on_iteration(log, info)
+
+
+def setup_mongo_observer(ex):
+    mongo_url = os.getenv('SACRED_MONGO_URL')
+    db_name = os.getenv('SACRED_DB_NAME')
+    if mongo_url is not None and db_name is not None:
+        ex.observers.append(MongoObserver.create(url=mongo_url, db_name=db_name))
+
+
+def run_predict(make_predictions):
+    text = sys.stdin.read()
+    sents = CorpusReader.to_sents(text)
+    pred_labels = make_predictions(sents)
+    index = 0
+    for sent in sents:
+        for word in sent:
+            tag = pred_labels[index]
+            print(f'{word}\t{tag}')
+            index += 1
+        print()
+
+
+def separate_tagged_sents(tagged_sents):
+    sents, tags = [], []
+    for ts in tagged_sents:
+        words, tags_ = zip(*ts)
+        words, tags_ = list(words), list(tags_)
+        sents.append(words)
+        tags.append(tags_)
+    return sents, tags

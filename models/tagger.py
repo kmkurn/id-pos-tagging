@@ -1,6 +1,6 @@
 from collections import Counter
 from contextlib import contextmanager
-from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import FrozenSet, List, Mapping, Optional, Sequence, Union
 import warnings
 
 from torch.autograd import Variable as Var
@@ -33,13 +33,14 @@ class MemorizationTagger(object):
     @classmethod
     def train(
             cls,
-            tagged_sents: Sequence[Sequence[Tuple[Word, Tag]]],
+            sents: Sequence[Sequence[Word]],
+            tags: Sequence[Sequence[Tag]],
             window: int = 2,
     ) -> 'MemorizationTagger':
         mapping = {}
-        for tagged_sent in tagged_sents:
-            words, tags = zip(*tagged_sent)
-            for fs, tag in zip(cls._extract_features(words, window=window), tags):
+        assert len(sents) == len(tags)
+        for words, tags_ in zip(sents, tags):
+            for fs, tag in zip(cls._extract_features(words, window=window), tags_):
                 mapping[frozenset(fs.items())] = tag
         return cls(mapping, window=window)
 
