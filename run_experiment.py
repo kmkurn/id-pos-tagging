@@ -7,7 +7,6 @@ import json
 import math
 import operator
 import os
-import pickle
 import shutil
 
 from pycrfsuite import ItemSequence, Tagger
@@ -25,6 +24,7 @@ import torch.optim as optim
 import torchnet as tnt
 
 from models import MemorizationTagger, make_neural_tagger
+from serialization import dump, load
 from utils import CorpusReader, SacredAwarePycrfsuiteTrainer as Trainer
 
 ex = Experiment(name='id-pos-tagging')
@@ -209,8 +209,8 @@ def train_majority(train_path, model_path, _log, _run):
     c = Counter(tag for _, tag in train_reader.tagged_words())
     majority_tag = c.most_common(n=1)[0][0]
     _log.info('Saving model to %s', model_path)
-    with open(model_path, 'wb') as f:
-        pickle.dump({'majority_tag': majority_tag}, f)
+    with open(model_path, 'w') as f:
+        print(dump({'majority_tag': majority_tag}), file=f)
     if SACRED_OBSERVE_FILES:
         _run.add_artifact(model_path)
 
@@ -221,8 +221,8 @@ def train_memo(train_path, model_path, _log, _run, window=2):
     _log.info('Start training model')
     model = MemorizationTagger.train(train_reader.tagged_sents(), window=window)
     _log.info('Saving model to %s', model_path)
-    with open(model_path, 'wb') as f:
-        pickle.dump(model, f)
+    with open(model_path, 'w') as f:
+        print(dump(model), file=f)
     if SACRED_OBSERVE_FILES:
         _run.add_artifact(model_path)
 
@@ -807,8 +807,8 @@ def train_neural(
 @ex.capture
 def predict_majority(reader, model_path, _log, _run):
     _log.info('Loading model from %s', model_path)
-    with open(model_path, 'rb') as f:
-        model = pickle.load(f)
+    with open(model_path) as f:
+        model = load(f.read())
     if SACRED_OBSERVE_FILES:
         _run.add_resource(model_path)
     _log.info('Making predictions with the model')
@@ -818,8 +818,8 @@ def predict_majority(reader, model_path, _log, _run):
 @ex.capture
 def predict_memo(reader, model_path, _log, _run):
     _log.info('Loading model from %s', model_path)
-    with open(model_path, 'rb') as f:
-        model = pickle.load(f)
+    with open(model_path) as f:
+        model = load(f.read())
     if SACRED_OBSERVE_FILES:
         _run.add_resource(model_path)
     _log.info('Making predictions with the model')
