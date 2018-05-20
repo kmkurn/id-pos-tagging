@@ -86,13 +86,6 @@ def make_preds(tagger, sents, _log):
     return tagger.tag(itemseq)
 
 
-@ex.command(unobserved=True)
-def predict():
-    """Make predictions using a trained CRF model."""
-    model = load_model()
-    run_predict(lambda sents: make_preds(model, sents))
-
-
 @ex.command
 def train(model_path, _log, _run, window=2):
     """Train a CRF model."""
@@ -120,6 +113,13 @@ def train(model_path, _log, _run, window=2):
     trainer.train(model_path, holdout=holdout)
     if SACRED_OBSERVE_FILES:
         _run.add_artifact(model_path)
+
+
+@ex.command(unobserved=True)
+def predict():
+    """Make predictions using a trained CRF model."""
+    model = load_model()
+    run_predict(lambda sents: make_preds(model, sents))
 
 
 @ex.automain

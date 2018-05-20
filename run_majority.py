@@ -37,13 +37,6 @@ def make_preds(model, sents, _log):
     return [model['majority_tag']] * len(words)
 
 
-@ex.command(unobserved=True)
-def predict():
-    """Make predictions using a trained majority vote model."""
-    model = load_model()
-    run_predict(lambda sents: make_preds(model, sents))
-
-
 @ex.command
 def train(model_path, _log, _run):
     """Train a majority vote model."""
@@ -55,6 +48,13 @@ def train(model_path, _log, _run):
         print(dump({'majority_tag': majority_tag}), file=f)
     if SACRED_OBSERVE_FILES:
         _run.add_artifact(model_path)
+
+
+@ex.command(unobserved=True)
+def predict():
+    """Make predictions using a trained majority vote model."""
+    model = load_model()
+    run_predict(lambda sents: make_preds(model, sents))
 
 
 @ex.automain

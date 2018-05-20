@@ -39,13 +39,6 @@ def make_preds(model, sents, _log):
     return [tag for sent in sents for tag in model.predict(sent)]
 
 
-@ex.command(unobserved=True)
-def predict():
-    """Make predictions using a trained memorization model."""
-    model = load_model()
-    run_predict(lambda sents: make_preds(model, sents))
-
-
 @ex.command
 def train(model_path, _log, _run, window=2):
     """Train a memorization model."""
@@ -59,6 +52,13 @@ def train(model_path, _log, _run, window=2):
         print(dump(model), file=f)
     if SACRED_OBSERVE_FILES:
         _run.add_artifact(model_path)
+
+
+@ex.command(unobserved=True)
+def predict():
+    """Make predictions using a trained memorization model."""
+    model = load_model()
+    run_predict(lambda sents: make_preds(model, sents))
 
 
 @ex.automain

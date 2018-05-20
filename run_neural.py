@@ -459,15 +459,6 @@ def set_random_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-@ex.command(unobserved=True)
-def predict():
-    """Make predictions using a trained neural model."""
-    field_odict = load_fields()
-    model = load_model(field_odict)
-    model.eval()
-    run_predict(lambda sents: make_preds(field_odict, model, sents))
-
-
 @ex.command
 def train(
         save_dir,
@@ -736,6 +727,15 @@ def train(
         engine.train(net, train_iter, max_epochs, optimizer)
     except KeyboardInterrupt:
         _log.info('Training interrupted, aborting')
+
+
+@ex.command(unobserved=True)
+def predict():
+    """Make predictions using a trained neural model."""
+    field_odict = load_fields()
+    model = load_model(field_odict)
+    model.eval()
+    run_predict(lambda sents: make_preds(field_odict, model, sents))
 
 
 @ex.automain
