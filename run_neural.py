@@ -109,6 +109,8 @@ def default():
     grad_norm_threshold = 1.
 
 
+# Disable lowercasing in preprocessing by the preprocessing ingredient
+# because the neural model may lowercase the words but not the subwords
 @prep_ingredient.config
 def update_cfg():
     lower = False
