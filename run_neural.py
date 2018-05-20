@@ -86,7 +86,7 @@ def default():
     # learning rate
     lr = 0.001
     # batch size
-    batch_size = 256
+    batch_size = 8
     # GPU device or -1 for CPU
     device = 0 if torch.cuda.is_available() else -1
     # print training log every this iterations
