@@ -52,7 +52,4 @@ if __name__ == '__main__':
         '-o', '--output-directory', dest='outdir', default=os.getcwd(), help='output directory')
     parser.add_argument('--seed', type=int, default=12345, help='random seed')
     args = parser.parse_args()
-    try:
-        main(args)
-    except Exception as e:
-        parser.error(str(e))
+    main(args)
