@@ -74,6 +74,7 @@ def run_evaluation(
         'test': read_test_corpus,
     }
 
+    # TODO evaluate only once, let the user specify the cutoff and run a separate evaluation
     def do_eval(cut=False):
         kwargs = {'max_sent_len': cutoff} if cut else {}
         try:
