@@ -85,8 +85,10 @@ def default():
     use_crf = False
     # learning rate
     lr = 0.001
-    # batch size
+    # batch size at train time
     batch_size = 8
+    # batch size at test time
+    test_batch_size = 256
     # GPU device or -1 for CPU
     device = 0 if torch.cuda.is_available() else -1
     # print training log every this iterations
@@ -292,7 +294,7 @@ def make_dataset(sents, fields, _log, tags=None):
 
 
 @ex.capture
-def make_preds(field_odict, model, sents, _log, batch_size=32, device=-1):
+def make_preds(field_odict, model, sents, _log, test_batch_size=32, device=-1):
     TAGS = field_odict['tags']
 
     # We need to set tags field to None because we don't have tags at test time; setting it
@@ -307,7 +309,7 @@ def make_preds(field_odict, model, sents, _log, batch_size=32, device=-1):
     dataset = make_dataset(preprocess(sents), field_odict.items())
     sort_key = lambda ex: len(ex.words)  # noqa: E731
     iterator = BucketIterator(
-        dataset, batch_size, sort_key=sort_key, device=device, train=False)
+        dataset, test_batch_size, sort_key=sort_key, device=device, train=False)
 
     _log.info('Making predictions with the model')
 
@@ -467,6 +469,7 @@ def train(
         _log,
         _run,
         batch_size=16,
+        test_batch_size=32,
         device=-1,
         print_every=10,
         max_epochs=20,
@@ -495,7 +498,7 @@ def train(
     train_iter = BucketIterator(
         train_dataset, batch_size, sort_key=sort_key, device=device, repeat=False)
     train_eval_iter = BucketIterator(
-        train_dataset, batch_size, sort_key=sort_key, device=device, train=False)
+        train_dataset, test_batch_size, sort_key=sort_key, device=device, train=False)
     dev_iter = None
 
     reader = read_dev_corpus()
@@ -503,7 +506,7 @@ def train(
         sents, tags = separate_tagged_sents(reader.tagged_sents())
         dev_dataset = make_dataset(preprocess(sents), field_odict.items(), tags=tags)
         dev_iter = BucketIterator(
-            dev_dataset, batch_size, sort_key=sort_key, device=device, train=False)
+            dev_dataset, test_batch_size, sort_key=sort_key, device=device, train=False)
 
     # Build vocabularies and save fields
     build_vocab(field_odict.items(), train_dataset)
