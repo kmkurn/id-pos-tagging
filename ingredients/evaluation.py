@@ -18,8 +18,6 @@ def cfg():
     path = None
     # where to save the confusion matrix
     cm_path = None
-    # sentence length cutoff for evaluation
-    cutoff = 50
 
 
 @ing.capture
@@ -66,43 +64,32 @@ def plot_confusion_matrix(gold_labels, pred_labels, cm_path, _log, _run):
 
 
 @ing.capture
-def run_evaluation(
-        make_predictions, _log, _run, which='test', cutoff=50, path=None, cm_path=None):
+def run_evaluation(make_predictions, _log, _run, which='test', path=None, cm_path=None):
     read_fn = {
         'train': read_train_corpus,
         'dev': read_dev_corpus,
         'test': read_test_corpus,
     }
 
-    # TODO evaluate only once, let the user specify the cutoff and run a separate evaluation
-    def do_eval(cut=False):
-        kwargs = {'max_sent_len': cutoff} if cut else {}
-        try:
-            reader = read_fn[which](**kwargs)
-        except KeyError:
-            choices = ', '.join(read_fn.keys())
-            msg = f'{which} is not a valid corpus set, possible choices are: {choices}'
-            raise KeyError(msg)
+    try:
+        reader = read_fn[which]()
+    except KeyError:
+        choices = ', '.join(read_fn.keys())
+        msg = f'{which} is not a valid corpus set, possible choices are: {choices}'
+        raise KeyError(msg)
 
-        _log.info('Obtaining the gold labels from the %s corpus', which)
-        gold_labels = [tag for _, tag in reader.tagged_words()]
-        _log.info('Obtaining the predicted labels')
-        pred_labels = make_predictions(reader.sents())
-        f1 = f1_score(gold_labels, pred_labels, average='weighted')
-        if cut:
-            _log.info('f1 (length <= %d): %f', cutoff, f1)
-            _run.log_scalar('cutoff_f1', f1)
-        else:
-            _log.info('f1: %f', f1)
-            _run.log_scalar('f1', f1)
-            if path is not None:
-                evaluate_fully(gold_labels, pred_labels, result={'overall_f1': f1})
-            if cm_path is not None:
-                plot_confusion_matrix(gold_labels, pred_labels)
-        return f1
+    _log.info('Obtaining the gold labels from the %s corpus', which)
+    gold_labels = [tag for _, tag in reader.tagged_words()]
+    _log.info('Obtaining the predicted labels')
+    pred_labels = make_predictions(reader.sents())
+    f1 = f1_score(gold_labels, pred_labels, average='weighted')
+    _log.info('f1: %f', f1)
+    _run.log_scalar('f1', f1)
 
-    # Evaluate lenghts less than cutoff
-    do_eval(cut=True)
+    if path is not None:
+        evaluate_fully(gold_labels, pred_labels, result={'overall_f1': f1})
 
-    # Evaluate all lengths
-    return do_eval()
+    if cm_path is not None:
+        plot_confusion_matrix(gold_labels, pred_labels)
+
+    return f1

@@ -15,6 +15,8 @@ def cfg():
     dev = None
     # path to test corpus
     test = 'test.tsv'
+    # maximum allowed sentence length or -1 for no limit
+    max_sent_len = -1
 
 
 @ing.capture
@@ -27,15 +29,15 @@ def read_corpus(path, _log, _run, name='train', encoding='utf-8', max_sent_len=-
 
 
 @ing.capture
-def read_train_corpus(train, **kwargs):
-    return read_corpus(train, **kwargs)
+def read_train_corpus(train):
+    return read_corpus(train)
 
 
 @ing.capture
-def read_dev_corpus(dev, **kwargs):
-    return read_corpus(dev, name='dev', **kwargs) if dev is not None else None
+def read_dev_corpus(dev):
+    return read_corpus(dev, name='dev') if dev is not None else None
 
 
 @ing.capture
-def read_test_corpus(test, **kwargs):
-    return read_corpus(test, name='test', **kwargs)
+def read_test_corpus(test):
+    return read_corpus(test, name='test')
