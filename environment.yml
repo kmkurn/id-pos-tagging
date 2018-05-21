@@ -23,4 +23,4 @@ dependencies:
     - pytorch-crf==0.5.1
     - sacred==0.7.3
     - torchtext==0.2.3
-    - git+https://github.com/pytorch/tnt.git@464aa4
+    - git+https://github.com/pytorch/tnt.git@464aa4#egg=torchnet
