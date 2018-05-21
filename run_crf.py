@@ -36,6 +36,66 @@ def default():
     max_iter = 2**31 - 1
 
 
+@ex.named_config
+def tuned_on_fold1():
+    c2 = 0.0223126
+    max_iter = 100
+    min_freq = 1
+    seed = 152405808
+    use_prefix = True
+    use_suffix = False
+    use_wordshape = False
+    window = 1
+
+
+@ex.named_config
+def tuned_on_fold2():
+    c2 = 0.169665
+    max_iter = 100
+    min_freq = 1
+    seed = 284887733
+    use_prefix = True
+    use_suffix = True
+    use_wordshape = False
+    window = 1
+
+
+@ex.named_config
+def tuned_on_fold3():
+    c2 = 0.0151549
+    max_iter = 100
+    min_freq = 1
+    seed = 570494863
+    use_prefix = True
+    use_suffix = True
+    use_wordshape = False
+    window = 3
+
+
+@ex.named_config
+def tuned_on_fold4():
+    c2 = 0.189562
+    max_iter = 100
+    min_freq = 1
+    seed = 229763142
+    use_prefix = True
+    use_suffix = True
+    use_wordshape = True
+    window = 2
+
+
+@ex.named_config
+def tuned_on_fold5():
+    c2 = 0.00762765
+    max_iter = 100
+    min_freq = 2
+    seed = 774249922
+    use_prefix = True
+    use_suffix = True
+    use_wordshape = False
+    window = 1
+
+
 nlp = spacy.blank('id')  # load once b/c this is slow
 
 

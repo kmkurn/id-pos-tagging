@@ -22,6 +22,31 @@ def default():
     window = 2
 
 
+@ex.named_config
+def tuned_on_fold1():
+    window = 0
+
+
+@ex.named_config
+def tuned_on_fold2():
+    window = 0
+
+
+@ex.named_config
+def tuned_on_fold3():
+    window = 0
+
+
+@ex.named_config
+def tuned_on_fold4():
+    window = 0
+
+
+@ex.named_config
+def tuned_on_fold5():
+    window = 0
+
+
 @ex.capture
 def load_model(model_path, _log, _run):
     _log.info('Loading model from %s', model_path)
