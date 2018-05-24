@@ -36,6 +36,8 @@ def default():
     max_iter = 2**31 - 1
 
 
+# TODO update all these 'tuned_on_foldX' named configs once random
+# search is performed
 @ex.named_config
 def tuned_on_fold1():
     c2 = 0.0223126
@@ -103,20 +105,39 @@ nlp = spacy.blank('id')  # load once b/c this is slow
 def extract_crf_features(sent, window=2, use_prefix=True, use_suffix=True, use_wordshape=False):
     assert window >= 0, 'window cannot be negative'
 
+    sent = ['<s>'] + sent + ['</s>']
     doc = Doc(nlp.vocab, words=sent)
-    for i in range(len(sent)):
+    pad_token = '<pad>'
+
+    for i in range(1, len(sent) - 1):
         fs = {'w[0]': sent[i]}
-        for d in range(1, window + 1):
-            fs[f'w[-{d}]'] = sent[i - d] if i - d >= 0 else '<s>'
-            fs[f'w[+{d}]'] = sent[i + d] if i + d < len(sent) else '</s>'
         if use_prefix:
-            fs['pref-2'] = sent[i][:2]  # first 2 chars
-            fs['pref-3'] = sent[i][:3]  # first 3 chars
+            fs['pref-2[0]'] = sent[i][:2]  # first 2 chars
+            fs['pref-3[0]'] = sent[i][:3]  # first 3 chars
         if use_suffix:
-            fs['suff-2'] = sent[i][-2:]  # last 2 chars
-            fs['suff-3'] = sent[i][-3:]  # last 3 chars
+            fs['suff-2[0]'] = sent[i][-2:]  # last 2 chars
+            fs['suff-3[0]'] = sent[i][-3:]  # last 3 chars
         if use_wordshape:
-            fs['shape'] = doc[i].shape_
+            fs['shape[0]'] = doc[i].shape_
+
+        # Contextual features
+        for d in range(1, window + 1):
+            fs[f'w[-{d}]'] = sent[i - d] if i - d >= 0 else pad_token
+            fs[f'w[+{d}]'] = sent[i + d] if i + d < len(sent) else pad_token
+            if use_prefix:
+                fs[f'pref-2[-{d}]'] = sent[i - d][:2] if i - d >= 0 else pad_token
+                fs[f'pref-3[-{d}]'] = sent[i - d][:3] if i - d >= 0 else pad_token
+                fs[f'pref-2[+{d}]'] = sent[i + d][:2] if i + d < len(sent) else pad_token
+                fs[f'pref-3[+{d}]'] = sent[i + d][:3] if i + d < len(sent) else pad_token
+            if use_suffix:
+                fs[f'suff-2[-{d}]'] = sent[i - d][-2:] if i - d >= 0 else pad_token
+                fs[f'suff-3[-{d}]'] = sent[i - d][-3:] if i - d >= 0 else pad_token
+                fs[f'suff-2[+{d}]'] = sent[i + d][-2:] if i + d < len(sent) else pad_token
+                fs[f'suff-3[+{d}]'] = sent[i + d][-3:] if i + d < len(sent) else pad_token
+            if use_wordshape:
+                fs[f'shape[-{d}]'] = doc[i - d].shape_ if i - d >= 0 else pad_token
+                fs[f'shape[+{d}]'] = doc[i + d].shape_ if i + d < len(sent) else pad_token
+
         yield fs
 
 
