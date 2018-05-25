@@ -123,10 +123,10 @@ def extract_crf_features(sent, window=2, use_prefix=True, use_suffix=True, use_w
         fs = {'w[0]': sent[i]}
         if use_prefix:
             fs['pref-2[0]'] = prefixes_2[i]
-            fs['pref-3[0]'] = prefixes_2[i]
+            fs['pref-3[0]'] = prefixes_3[i]
         if use_suffix:
             fs['suff-2[0]'] = suffixes_2[i]
-            fs['suff-3[0]'] = suffixes_2[i]
+            fs['suff-3[0]'] = suffixes_3[i]
         if use_wordshape:
             fs['shape[0]'] = doc[i].shape_
 
