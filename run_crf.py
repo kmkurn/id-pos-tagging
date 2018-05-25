@@ -105,18 +105,28 @@ nlp = spacy.blank('id')  # load once b/c this is slow
 def extract_crf_features(sent, window=2, use_prefix=True, use_suffix=True, use_wordshape=False):
     assert window >= 0, 'window cannot be negative'
 
+    prefixes_2 = [w[:2] for w in sent]  # first 2 chars
+    prefixes_3 = [w[:3] for w in sent]  # first 3 chars
+    suffixes_2 = [w[-2:] for w in sent]  # last 2 chars
+    suffixes_3 = [w[-3:] for w in sent]  # last 3 chars
+
     sent = ['<s>'] + sent + ['</s>']
+    prefixes_2 = ['<s>'] + prefixes_2 + ['</s>']
+    prefixes_3 = ['<s>'] + prefixes_3 + ['</s>']
+    suffixes_2 = ['<s>'] + suffixes_2 + ['</s>']
+    suffixes_3 = ['<s>'] + suffixes_3 + ['</s>']
+
     doc = Doc(nlp.vocab, words=sent)
     pad_token = '<pad>'
 
     for i in range(1, len(sent) - 1):
         fs = {'w[0]': sent[i]}
         if use_prefix:
-            fs['pref-2[0]'] = sent[i][:2]  # first 2 chars
-            fs['pref-3[0]'] = sent[i][:3]  # first 3 chars
+            fs['pref-2[0]'] = prefixes_2[i]
+            fs['pref-3[0]'] = prefixes_2[i]
         if use_suffix:
-            fs['suff-2[0]'] = sent[i][-2:]  # last 2 chars
-            fs['suff-3[0]'] = sent[i][-3:]  # last 3 chars
+            fs['suff-2[0]'] = suffixes_2[i]
+            fs['suff-3[0]'] = suffixes_2[i]
         if use_wordshape:
             fs['shape[0]'] = doc[i].shape_
 
@@ -125,15 +135,15 @@ def extract_crf_features(sent, window=2, use_prefix=True, use_suffix=True, use_w
             fs[f'w[-{d}]'] = sent[i - d] if i - d >= 0 else pad_token
             fs[f'w[+{d}]'] = sent[i + d] if i + d < len(sent) else pad_token
             if use_prefix:
-                fs[f'pref-2[-{d}]'] = sent[i - d][:2] if i - d >= 0 else pad_token
-                fs[f'pref-3[-{d}]'] = sent[i - d][:3] if i - d >= 0 else pad_token
-                fs[f'pref-2[+{d}]'] = sent[i + d][:2] if i + d < len(sent) else pad_token
-                fs[f'pref-3[+{d}]'] = sent[i + d][:3] if i + d < len(sent) else pad_token
+                fs[f'pref-2[-{d}]'] = prefixes_2[i - d] if i - d >= 0 else pad_token
+                fs[f'pref-3[-{d}]'] = prefixes_3[i - d] if i - d >= 0 else pad_token
+                fs[f'pref-2[+{d}]'] = prefixes_2[i + d] if i + d < len(sent) else pad_token
+                fs[f'pref-3[+{d}]'] = prefixes_3[i + d] if i + d < len(sent) else pad_token
             if use_suffix:
-                fs[f'suff-2[-{d}]'] = sent[i - d][-2:] if i - d >= 0 else pad_token
-                fs[f'suff-3[-{d}]'] = sent[i - d][-3:] if i - d >= 0 else pad_token
-                fs[f'suff-2[+{d}]'] = sent[i + d][-2:] if i + d < len(sent) else pad_token
-                fs[f'suff-3[+{d}]'] = sent[i + d][-3:] if i + d < len(sent) else pad_token
+                fs[f'suff-2[-{d}]'] = suffixes_2[i - d] if i - d >= 0 else pad_token
+                fs[f'suff-3[-{d}]'] = suffixes_3[i - d] if i - d >= 0 else pad_token
+                fs[f'suff-2[+{d}]'] = suffixes_2[i + d] if i + d < len(sent) else pad_token
+                fs[f'suff-3[+{d}]'] = suffixes_3[i + d] if i + d < len(sent) else pad_token
             if use_wordshape:
                 fs[f'shape[-{d}]'] = doc[i - d].shape_ if i - d >= 0 else pad_token
                 fs[f'shape[+{d}]'] = doc[i + d].shape_ if i + d < len(sent) else pad_token
