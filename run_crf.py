@@ -109,14 +109,16 @@ def extract_crf_features(sent, window=2, use_prefix=True, use_suffix=True, use_w
     prefixes_3 = [w[:3] for w in sent]  # first 3 chars
     suffixes_2 = [w[-2:] for w in sent]  # last 2 chars
     suffixes_3 = [w[-3:] for w in sent]  # last 3 chars
+    doc = Doc(nlp.vocab, words=sent)
+    shapes = [doc[i].shape_ for i in range(len(sent))]  # wordshape
 
     sent = ['<s>'] + sent + ['</s>']
     prefixes_2 = ['<s>'] + prefixes_2 + ['</s>']
     prefixes_3 = ['<s>'] + prefixes_3 + ['</s>']
     suffixes_2 = ['<s>'] + suffixes_2 + ['</s>']
     suffixes_3 = ['<s>'] + suffixes_3 + ['</s>']
+    shapes = ['<s>'] + shapes + ['</s>']
 
-    doc = Doc(nlp.vocab, words=sent)
     pad_token = '<pad>'
 
     for i in range(1, len(sent) - 1):
@@ -128,7 +130,7 @@ def extract_crf_features(sent, window=2, use_prefix=True, use_suffix=True, use_w
             fs['suff-2[0]'] = suffixes_2[i]
             fs['suff-3[0]'] = suffixes_3[i]
         if use_wordshape:
-            fs['shape[0]'] = doc[i].shape_
+            fs['shape[0]'] = shapes[i]
 
         # Contextual features
         for d in range(1, window + 1):
@@ -145,8 +147,8 @@ def extract_crf_features(sent, window=2, use_prefix=True, use_suffix=True, use_w
                 fs[f'suff-2[+{d}]'] = suffixes_2[i + d] if i + d < len(sent) else pad_token
                 fs[f'suff-3[+{d}]'] = suffixes_3[i + d] if i + d < len(sent) else pad_token
             if use_wordshape:
-                fs[f'shape[-{d}]'] = doc[i - d].shape_ if i - d >= 0 else pad_token
-                fs[f'shape[+{d}]'] = doc[i + d].shape_ if i + d < len(sent) else pad_token
+                fs[f'shape[-{d}]'] = shapes[i - d] if i - d >= 0 else pad_token
+                fs[f'shape[+{d}]'] = shapes[i + d] if i + d < len(sent) else pad_token
 
         yield fs
 
