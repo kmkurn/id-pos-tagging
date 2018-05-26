@@ -88,9 +88,6 @@ class SacredAwarePycrfsuiteTrainer(Trainer):
             attr = f'avg_{metric}'
             if attr in info:
                 self.__run.log_scalar(f'{metric}(dev)', info[attr])
-            # Per label
-            for label, score in info['scores'].items():
-                self.__run.log_scalar(f'{metric}(dev, {label})', getattr(score, metric))
         super().on_iteration(log, info)
 
 
