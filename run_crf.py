@@ -33,68 +33,41 @@ def default():
     # L2 regularization coefficient
     c2 = 1.0
     # maximum number of iterations
-    max_iter = 2**31 - 1
+    max_iter = 100
 
 
-# TODO update all these 'tuned_on_foldX' named configs once random
-# search is performed
 @ex.named_config
 def tuned_on_fold1():
-    c2 = 0.0223126
-    max_iter = 100
-    min_freq = 1
-    seed = 152405808
-    use_prefix = True
-    use_suffix = False
-    use_wordshape = False
-    window = 1
+    c2 = 0.002308
+    seed = 615782537
+    window = 0
 
 
 @ex.named_config
 def tuned_on_fold2():
-    c2 = 0.169665
-    max_iter = 100
-    min_freq = 1
-    seed = 284887733
-    use_prefix = True
-    use_suffix = True
-    use_wordshape = False
-    window = 1
+    c2 = 0.117544
+    seed = 687109176
+    window = 0
 
 
 @ex.named_config
 def tuned_on_fold3():
-    c2 = 0.0151549
-    max_iter = 100
-    min_freq = 1
-    seed = 570494863
-    use_prefix = True
-    use_suffix = True
-    use_wordshape = False
-    window = 3
+    c2 = 0.004449
+    seed = 558825499
+    window = 0
 
 
 @ex.named_config
 def tuned_on_fold4():
-    c2 = 0.189562
-    max_iter = 100
-    min_freq = 1
-    seed = 229763142
-    use_prefix = True
-    use_suffix = True
-    use_wordshape = True
-    window = 2
+    c2 = 0.262368
+    seed = 915371814
+    window = 1
 
 
 @ex.named_config
 def tuned_on_fold5():
-    c2 = 0.00762765
-    max_iter = 100
-    min_freq = 2
-    seed = 774249922
-    use_prefix = True
-    use_suffix = True
-    use_wordshape = False
+    c2 = 0.186025
+    seed = 414672713
     window = 1
 
 
