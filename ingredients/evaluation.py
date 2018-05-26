@@ -14,7 +14,7 @@ ing = Ingredient('eval', ingredients=[corpus_ingredient])
 def cfg():
     # which set of the corpus to evaluate on [train, dev, test]
     which = 'test'
-    # where to serialize evaluation result
+    # where to serialize the full evaluation result
     path = None
     # where to save the confusion matrix
     cm_path = None
