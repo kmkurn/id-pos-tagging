@@ -606,13 +606,6 @@ def train(
         _run.log_scalar(f'ppl({name})', math.exp(loss))
         _run.log_scalar(f'f1({name})', f1)
 
-        # Per tag F1
-        labels = list(set(references + hypotheses))
-        per_tag_f1 = f1_score(references, hypotheses, average=None, labels=labels)
-        for score, tag in zip(per_tag_f1, labels):
-            scalar_name = f'f1({name}, {tag})'
-            _run.log_scalar(scalar_name, score)
-
         return loss, f1
 
     def on_start(state):
