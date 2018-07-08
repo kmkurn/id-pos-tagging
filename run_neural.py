@@ -118,6 +118,71 @@ def update_cfg():
     lower = False
 
 
+@ex.named_config
+def tuned_on_fold1():
+    dropout = 0.256525
+    filter_width = 5
+    lr = 0.00481577
+    seed = 38882601
+    use_chars = True
+    use_crf = True
+    use_lstm = True
+    use_prefix = True
+    use_suffix = True
+
+
+@ex.named_config
+def tuned_on_fold2():
+    dropout = 0.227054
+    filter_width = 3
+    lr = 0.00632532
+    seed = 126596260
+    use_chars = True
+    use_crf = True
+    use_lstm = True
+    use_prefix = True
+    use_suffix = True
+
+
+@ex.named_config
+def tuned_on_fold3():
+    dropout = 0.298683
+    filter_width = 4
+    lr = 0.00174423
+    seed = 730811024
+    use_chars = True
+    use_crf = False
+    use_lstm = True
+    use_prefix = True
+    use_suffix = True
+
+
+@ex.named_config
+def tuned_on_fold4():
+    dropout = 0.308858
+    filter_width = 4
+    lr = 0.00329688
+    seed = 180233289
+    use_chars = True
+    use_crf = False
+    use_lstm = True
+    use_prefix = True
+    use_suffix = True
+
+
+@ex.named_config
+def tuned_on_fold5():
+    dropout = 0.375609
+    filter_width = 4
+    lr = 0.00213372
+    seed = 242325223
+    use_chars = True
+    use_crf = False
+    use_lstm = True
+    use_prefix = True
+    use_suffix = True
+
+
 FIELDS_FILENAME = 'fields.pkl'
 
 
