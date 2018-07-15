@@ -146,12 +146,12 @@ def tuned_on_fold2():
 
 @ex.named_config
 def tuned_on_fold3():
-    dropout = 0.298683
-    filter_width = 4
-    lr = 0.00174423
-    seed = 730811024
+    dropout = 0.31277
+    filter_width = 3
+    lr = 0.00523078
+    seed = 67778084
     use_chars = True
-    use_crf = False
+    use_crf = True
     use_lstm = True
     use_prefix = True
     use_suffix = True
@@ -159,12 +159,12 @@ def tuned_on_fold3():
 
 @ex.named_config
 def tuned_on_fold4():
-    dropout = 0.308858
-    filter_width = 4
-    lr = 0.00329688
-    seed = 180233289
+    dropout = 0.336739
+    filter_width = 3
+    lr = 0.00100155
+    seed = 846762835
     use_chars = True
-    use_crf = False
+    use_crf = True
     use_lstm = True
     use_prefix = True
     use_suffix = True
@@ -172,12 +172,12 @@ def tuned_on_fold4():
 
 @ex.named_config
 def tuned_on_fold5():
-    dropout = 0.375609
-    filter_width = 4
-    lr = 0.00213372
-    seed = 242325223
+    dropout = 0.218253
+    filter_width = 3
+    lr = 0.00181876
+    seed = 143629997
     use_chars = True
-    use_crf = False
+    use_crf = True
     use_lstm = True
     use_prefix = True
     use_suffix = True
