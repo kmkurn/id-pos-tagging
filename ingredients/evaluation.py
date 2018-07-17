@@ -18,6 +18,8 @@ def cfg():
     path = None
     # where to save the confusion matrix
     cm_path = None
+    # whether to use weighted macro-averaged F1
+    weighted = True
 
 
 @ing.capture
@@ -64,7 +66,8 @@ def plot_confusion_matrix(gold_labels, pred_labels, cm_path, _log, _run):
 
 
 @ing.capture
-def run_evaluation(make_predictions, _log, _run, which='test', path=None, cm_path=None):
+def run_evaluation(
+        make_predictions, _log, _run, which='test', path=None, cm_path=None, weighted=True):
     read_fn = {
         'train': read_train_corpus,
         'dev': read_dev_corpus,
@@ -82,7 +85,8 @@ def run_evaluation(make_predictions, _log, _run, which='test', path=None, cm_pat
     gold_labels = [tag for _, tag in reader.tagged_words()]
     _log.info('Obtaining the predicted labels')
     pred_labels = make_predictions(reader.sents())
-    f1 = f1_score(gold_labels, pred_labels, average='weighted')
+    average = 'weighted' if weighted else 'macro'
+    f1 = f1_score(gold_labels, pred_labels, average=average)
     _log.info('f1: %f', f1)
     _run.log_scalar('f1', f1)
 
