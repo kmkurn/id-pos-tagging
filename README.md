@@ -2,9 +2,10 @@
 
 This repository contains the implementation of our paper:
 
-*Toward a Standardized and More Accurate Indonesian Part-of-Speech Tagging*.
-Kemal Kurniawan and Alham Fikri Aji. In *Proceedings of the International
-Conference on Asian Language Processing* (to appear). 2018.
+Kurniawan, K., & Aji, A. F. (2018). Toward a Standardized and
+More Accurate Indonesian Part-of-Speech Tagging. 2018 International
+Conference on Asian Language Processing (IALP), 303–307.
+https://doi.org/10.1109/IALP.2018.8629236
 
 ## Requirements
 
@@ -79,3 +80,23 @@ an experiment run will be saved everytime you run any `run_*.py` scripts.
 ## License
 
 MIT
+
+## Citation
+
+If you use our work, please cite:
+
+```
+@inproceedings{kurniawan2018,
+  place={Bandung, Indonesia},
+  title={Toward a Standardized and More Accurate Indonesian Part-of-Speech Tagging},
+  url={https://ieeexplore.ieee.org/document/8629236},
+  DOI={10.1109/IALP.2018.8629236},
+  note={arXiv: 1809.03391},
+  booktitle={2018 International Conference on Asian Language Processing (IALP)},
+  publisher={IEEE},
+  author={Kurniawan, Kemal and Aji, Alham Fikri},
+  year={2018},
+  month={Nov},
+  pages={303–307}
+}
+```
