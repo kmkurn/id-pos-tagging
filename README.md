@@ -27,8 +27,17 @@ $ source activate id-pos-tagging
 ## Dataset
 
 The dataset is available in `data/dataset.tar.gz`. Decompress this file and you
-will have `train.X.tsv`, `dev.X.tsv`, and `test.X.tsv` files for all 5 folds
-with `X` replaced with the fold number.
+will have `train.X.txt`, `dev.X.txt`, and `test.X.txt` files for all 5 folds
+with `X` replaced with the fold number. Each file contains the indices of the sentences
+in the original corpus. To obtain the sentences, you must first download the
+[IDN Tagged Corpus](https://github.com/famrashel/idn-tagged-corpus). Then, run
+
+```bash
+$ ./splits2tsv.py data Indonesian_Manually_Tagged_Corpus.tsv
+```
+
+where `data` is the directory containing the `{train,dev,test}.X.txt` files. The
+sentences will then be available in `data/{train,dev,test}.X.tsv` files.
 
 ## Running experiments
 
