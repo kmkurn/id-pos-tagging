@@ -8,12 +8,6 @@ import random
 from utils import CorpusReader
 
 
-def write_tsv(tagged_sents, path, encoding='utf8'):
-    with open(path, 'w', encoding=encoding) as f:
-        for tagged_sent in tagged_sents:
-            print('\n'.join('\t'.join(pair) for pair in tagged_sent), file=f, end='\n\n')
-
-
 def main(args):
     if args.num_folds <= 1:
         raise ValueError('number of folds is at least 2, found', args.num_folds)
@@ -25,18 +19,20 @@ def main(args):
 
     for fold in range(args.num_folds):
         test, rest = [], []
-        for i, tagged_sent in enumerate(tagged_sents):
-            if i % args.num_folds == fold:
-                test.append(tagged_sent)
+        for id_, _ in enumerate(tagged_sents):
+            if id_ % args.num_folds == fold:
+                test.append(id_)
             else:
-                rest.append(tagged_sent)
+                rest.append(id_)
         n_dev = math.floor(args.dev * len(rest))
         dev, train = rest[:n_dev], rest[n_dev:]
 
         for split, name in ((train, 'train'), (dev, 'dev'), (test, 'test')):
-            filename = f'{name}.{fold+1:02}.tsv'
+            filename = f'{name}.{fold+1:02}.txt'
             path = os.path.join(args.outdir, filename)
-            write_tsv(split, path, encoding=args.encoding)
+            with open(path, 'w', encoding=args.encoding) as f:
+                for id_ in split:
+                    print(id_, file=f)
 
 
 if __name__ == '__main__':
